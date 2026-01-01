@@ -1,0 +1,55 @@
+import type { ClientCollectionConfig, SanitizedCollectionConfig, SelectType } from '../index.js'
+
+/**
+ * Mutates the incoming select object to append fields required for upload thumbnails
+ * @param collectionConfig
+ * @param select
+ */
+export const appendUploadSelectFields = ({
+  collectionConfig,
+  select,
+}: {
+  collectionConfig: ClientCollectionConfig | SanitizedCollectionConfig
+  select: SelectType
+}) => {
+  if (!collectionConfig.upload || !select) {
+    return
+  }
+
+  /** `filename` identifies a populated upload and supplies useful thumbnail alt text. */
+  select.filename = true
+  select.mimeType = true
+  select.thumbnailURL = true
+
+  if (collectionConfig.upload.cacheTags) {
+    select.updatedAt = true
+  }
+
+  if (collectionConfig.upload.variants && collectionConfig.upload.variants.length > 0) {
+    if (
+      collectionConfig.upload.adminThumbnail &&
+      typeof collectionConfig.upload.adminThumbnail === 'string'
+    ) {
+      /** Only return image size properties that are required to generate the adminThumbnailURL */
+      select.variants = {
+        [collectionConfig.upload.adminThumbnail]: {
+          filename: true,
+        },
+      }
+    } else {
+      /** Only return image size properties that are required for thumbnails */
+      select.variants = collectionConfig.upload.variants.reduce((acc, imageSizeConfig) => {
+        return {
+          ...acc,
+          [imageSizeConfig.name]: {
+            filename: true,
+            url: true,
+            width: true,
+          },
+        }
+      }, {})
+    }
+  } else {
+    select.url = true
+  }
+}

@@ -1,0 +1,51 @@
+import dotenv from 'dotenv'
+import path from 'node:path'
+dotenv.config()
+
+// import nodemailer from 'nodemailer'
+
+import { assertDbReachable } from './__helpers/shared/assertDbReachable.js'
+import { generateDatabaseAdapter } from './dbAdapters.js'
+
+process.env.PAYLOAD_DISABLE_ADMIN = 'true'
+
+process.env.PAYLOAD_DROP_DATABASE = 'true'
+
+process.env.PAYLOAD_PUBLIC_CLOUD_STORAGE_ADAPTER = 's3'
+
+process.env.NODE_OPTIONS = '--no-deprecation'
+process.env.PAYLOAD_CI_DEPENDENCY_CHECKER = 'true'
+
+// // Mock createTestAccount to prevent calling external services
+// jest.spyOn(nodemailer, 'createTestAccount').mockImplementation(() => {
+//   return Promise.resolve({
+//     imap: { host: 'imap.test.com', port: 993, secure: true },
+//     pass: 'testpass',
+//     pop3: { host: 'pop3.test.com', port: 995, secure: true },
+//     smtp: { host: 'smtp.test.com', port: 587, secure: false },
+//     user: 'testuser',
+//     web: 'https://webmail.test.com',
+//   })
+// })
+
+if (!process.env.PAYLOAD_DATABASE) {
+  // Mutate env so we can use conditions by DB adapter in tests properly without ignoring // eslint no-jest-conditions.
+  // Default to mongodb, as our e2e tests currently do
+  // not pass on sqlite/postgres
+  process.env.PAYLOAD_DATABASE = 'mongodb'
+}
+
+/** Use one absolute SQLite file so Vitest and CLI child processes, which have different cwd's, share the same test database. */
+if (
+  process.env.PAYLOAD_DATABASE.startsWith('sqlite') &&
+  !process.env.SQLITE_URL &&
+  !process.env.DATABASE_URL
+) {
+  process.env.SQLITE_URL = `file:${path.resolve(process.cwd(), 'payload.db')}`
+}
+
+process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379'
+
+await assertDbReachable(process.env.PAYLOAD_DATABASE as Parameters<typeof assertDbReachable>[0])
+
+generateDatabaseAdapter(process.env.PAYLOAD_DATABASE)

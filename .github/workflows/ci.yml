@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  DO_NOT_TRACK: 1
+  NEXT_TELEMETRY_DISABLED: 1
+  NODE_OPTIONS: --max-old-space-size=8192
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: pnpm format:check
+      - run: pnpm lint --quiet
+      - run: pnpm run lint:css
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: pnpm run build:all
+      - run: pnpm test:unit
+      - run: pnpm test:types --target '>=5.7'

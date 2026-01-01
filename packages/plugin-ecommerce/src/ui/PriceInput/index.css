@@ -1,0 +1,23 @@
+@layer payload-default {
+  .formattedPrice {
+    .formattedPriceCurrencySymbol {
+      position: absolute;
+      inset-inline-start: var(--field-padding-inline);
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--color-text-secondary);
+      user-select: none;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .formattedPriceInput {
+      /* Reserve space for the absolutely-positioned currency symbol prefix */
+      padding-inline-start: var(--spacer-4);
+    }
+
+    .formattedPriceDescription {
+      max-width: 75ch;
+    }
+  }
+}

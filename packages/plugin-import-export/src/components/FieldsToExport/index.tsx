@@ -1,0 +1,100 @@
+'use client'
+
+import type { SelectFieldClientProps } from 'payload'
+import type { ReactNode } from 'react'
+
+import {
+  FieldLabel,
+  ReactSelect,
+  useConfig,
+  useDocumentInfo,
+  useField,
+  useListQuery,
+} from '@payloadcms/ui'
+import React, { useEffect, useMemo } from 'react'
+
+import { useImportExport } from '../ImportExportProvider/index.js'
+import { filterSelectableFieldValues, reduceFields } from './reduceFields.js'
+
+const baseClass = 'field-type fields-to-export'
+
+export const FieldsToExport: React.FC<SelectFieldClientProps> = (props) => {
+  const { id } = useDocumentInfo()
+  const { setValue, value } = useField<string[]>()
+  const { value: collectionSlug } = useField<string>({ path: 'collectionSlug' })
+  const { getEntityConfig } = useConfig()
+  const { collection } = useImportExport()
+  const { query } = useListQuery()
+
+  const collectionConfig = getEntityConfig({ collectionSlug: collectionSlug ?? collection })
+
+  const fieldOptions = useMemo(() => {
+    const disabledFields =
+      collectionConfig?.admin?.custom?.['plugin-import-export']?.disabledFields ?? []
+
+    return reduceFields({
+      disabledFields,
+      fields: collectionConfig?.fields,
+    })
+  }, [collectionConfig?.admin?.custom, collectionConfig?.fields])
+  useEffect(() => {
+    if (id || !collectionSlug) {
+      return
+    }
+
+    const queryColumns = query?.columns
+    const initialColumns = Array.isArray(queryColumns)
+      ? queryColumns.filter(
+          (column): column is string => typeof column === 'string' && !column.startsWith('-'),
+        )
+      : (collectionConfig?.admin?.defaultColumns ?? [])
+
+    setValue(filterSelectableFieldValues({ fieldOptions, values: initialColumns }))
+  }, [
+    id,
+    collectionSlug,
+    query?.columns,
+    collectionConfig?.admin?.defaultColumns,
+    fieldOptions,
+    setValue,
+  ])
+
+  const onChange = (options: { id: string; label: ReactNode; value: string }[]) => {
+    if (!options) {
+      setValue([])
+      return
+    }
+
+    const updatedValue = options.map((option) =>
+      typeof option === 'object' ? option.value : option,
+    )
+
+    setValue(updatedValue)
+  }
+
+  return (
+    <div className={baseClass}>
+      <FieldLabel label={props.field.label} path={props.path} />
+      <ReactSelect
+        className={baseClass}
+        disabled={props.readOnly}
+        getOptionValue={(option) => String(option.value)}
+        inputId={`field-${props.path.replace(/\./g, '__')}`}
+        isClearable={true}
+        isMulti={true}
+        isSortable={true}
+        // @ts-expect-error react select option
+        onChange={onChange}
+        options={fieldOptions}
+        value={
+          Array.isArray(value)
+            ? value.map((val) => {
+                const match = fieldOptions.find((opt) => opt.value === val)
+                return match ? { ...match, id: val } : { id: val, label: val, value: val }
+              })
+            : []
+        }
+      />
+    </div>
+  )
+}

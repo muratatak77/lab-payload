@@ -1,0 +1,86 @@
+/**
+ * E2E Matrix Generation Utilities
+ *
+ * This module provides types and functions for generating the GitHub Actions
+ * matrix configuration for E2E tests.
+ */
+
+export interface TestConfig {
+  /** Test file name (relative to tests/e2e/). An empty string runs every suite (combine with `grep`) */
+  file: string
+  /** Framework adapter to run the suite against */
+  framework?: 'next' | 'tanstack-start'
+  /** Number of shards to split this test file into */
+  shards: number
+  /** Whether tests can run in parallel (default: false) */
+  parallel?: boolean
+  /** Whether to disable Next.js `cacheComponents` for this test run (default: false) */
+  disableCacheComponents?: boolean
+  /** Only run tests matching this Playwright `--grep` pattern, e.g. a tag */
+  grep?: string
+  /**
+   * Whether the job runs with `continue-on-error` (failures don't block the
+   * `all-green` gate). Defaults to `true` for `tanstack-start` suites, `false`
+   * otherwise. Set explicitly to promote a stabilized tanstack suite to required.
+   */
+  optional?: boolean
+}
+
+interface MatrixEntry {
+  suite: string
+  framework: 'next' | 'tanstack-start'
+  shard: number
+  'total-shards': number
+  parallel: boolean
+  disableCacheComponents: boolean
+  grep?: string
+  /**
+   * When true, the matrix job runs with `continue-on-error`, so its failures do
+   * not block the `all-green` gate. TanStack Start suites are optional for now.
+   */
+  optional: boolean
+}
+
+interface Matrix {
+  include: MatrixEntry[]
+}
+
+function generateMatrix(testConfigs: TestConfig[]): Matrix {
+  const include: MatrixEntry[] = []
+
+  for (const {
+    file,
+    framework = 'next',
+    shards,
+    parallel = false,
+    disableCacheComponents = false,
+    grep,
+    optional = framework === 'tanstack-start',
+  } of testConfigs) {
+    for (let shard = 1; shard <= shards; shard++) {
+      include.push({
+        suite: file,
+        framework,
+        shard,
+        'total-shards': shards,
+        parallel,
+        disableCacheComponents,
+        grep,
+        optional,
+      })
+    }
+  }
+
+  return { include }
+}
+
+/**
+ * Creates and outputs the E2E test matrix configuration for GitHub Actions.
+ * Prints the matrix JSON to stdout for consumption by the CI workflow.
+ *
+ * @param testConfigs - Array of test files and their shard counts
+ */
+export function createE2EConfig(testConfigs: TestConfig[]): void {
+  const matrix = generateMatrix(testConfigs)
+  console.log(JSON.stringify(matrix))
+}

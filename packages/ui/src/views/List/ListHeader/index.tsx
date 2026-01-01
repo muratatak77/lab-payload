@@ -1,0 +1,150 @@
+import type { I18nClient } from '@payloadcms/translations'
+import type { ClientCollectionConfig, CurrentHierarchyItem, ViewTypes } from 'payload'
+
+import { getTranslation } from '@payloadcms/translations'
+import React from 'react'
+
+import { CloseModalButton } from '../../../elements/CloseModalButton/index.js'
+import { DefaultListViewTabs } from '../../../elements/DefaultListViewTabs/index.js'
+import { HierarchyEditButton } from '../../../elements/Hierarchy/EditButton/index.js'
+import { useListDrawerContext } from '../../../elements/ListDrawer/Provider.js'
+import { DrawerRelationshipSelect } from '../../../elements/ListHeader/DrawerRelationshipSelect/index.js'
+import {
+  ListDrawerConfirmSelectionButton,
+  ListDrawerCreateNewDocButton,
+} from '../../../elements/ListHeader/DrawerTitleActions/index.js'
+import { ListHeader } from '../../../elements/ListHeader/index.js'
+import { ListBulkUploadButton } from '../../../elements/ListHeader/TitleActions/index.js'
+import { useConfig } from '../../../providers/Config/index.js'
+import { useListQuery } from '../../../providers/ListQuery/index.js'
+import { ListSelection } from '../ListSelection/index.js'
+import './index.css'
+
+const drawerBaseClass = 'list-drawer'
+
+export type ListHeaderProps = {
+  Actions?: React.ReactNode[]
+  className?: string
+  collectionConfig: ClientCollectionConfig
+  currentHierarchyItem?: CurrentHierarchyItem
+  Description?: React.ReactNode
+  disableBulkDelete?: boolean
+  disableBulkEdit?: boolean
+  enableRowSelections?: boolean
+  hasCreatePermission: boolean
+  hasDeletePermission?: boolean
+  hasTrashPermission?: boolean
+  i18n: I18nClient
+  isBulkUploadEnabled: boolean
+  newDocumentURL: string
+  onBulkUploadSuccess?: () => void
+  smallBreak: boolean
+  TitleActions?: React.ReactNode[]
+  viewType?: ViewTypes
+}
+
+export const CollectionListHeader: React.FC<ListHeaderProps> = ({
+  className,
+  collectionConfig,
+  currentHierarchyItem,
+  Description,
+  disableBulkDelete,
+  disableBulkEdit,
+  enableRowSelections,
+  hasCreatePermission,
+  hasDeletePermission,
+  hasTrashPermission,
+  i18n,
+  isBulkUploadEnabled,
+  onBulkUploadSuccess,
+  smallBreak,
+  viewType,
+}) => {
+  const { config, getEntityConfig } = useConfig()
+  const { drawerSlug, isInDrawer, selectedOption } = useListDrawerContext()
+  const isTrashRoute = viewType === 'trash'
+  const { isGroupingBy } = useListQuery()
+  const title =
+    currentHierarchyItem?.title ?? getTranslation(collectionConfig?.labels?.plural, i18n)
+
+  if (isInDrawer) {
+    return (
+      <ListHeader
+        Actions={[]}
+        AfterListHeaderContent={
+          <>
+            {Description}
+            {<DrawerRelationshipSelect />}
+          </>
+        }
+        BeforeTitle={
+          <CloseModalButton className={`${drawerBaseClass}__header-close`} slug={drawerSlug} />
+        }
+        className={`${drawerBaseClass}__header`}
+        title={getTranslation(
+          getEntityConfig({ collectionSlug: selectedOption.value })?.labels?.plural,
+          i18n,
+        )}
+        TitleActions={[
+          <ListDrawerCreateNewDocButton
+            hasCreatePermission={hasCreatePermission}
+            key="list-drawer-create-new-doc"
+          />,
+          <ListDrawerConfirmSelectionButton
+            enableRowSelections={enableRowSelections}
+            key="list-drawer-confirm-selection"
+          />,
+        ].filter(Boolean)}
+      />
+    )
+  }
+
+  return (
+    <ListHeader
+      Actions={[
+        !smallBreak && !isGroupingBy && (
+          <ListSelection
+            collectionConfig={collectionConfig}
+            disableBulkDelete={disableBulkDelete}
+            disableBulkEdit={disableBulkEdit}
+            hasDeletePermission={hasDeletePermission}
+            hasTrashPermission={hasTrashPermission}
+            key="list-selection"
+            label={getTranslation(collectionConfig?.labels?.plural, i18n)}
+            showSelectAllAcrossPages={!isGroupingBy}
+            viewType={viewType}
+          />
+        ),
+        <DefaultListViewTabs
+          collectionConfig={collectionConfig}
+          config={config}
+          key="default-list-actions"
+          viewType={viewType}
+        />,
+      ].filter(Boolean)}
+      AfterListHeaderContent={Description}
+      className={className}
+      title={title}
+      TitleActions={[
+        currentHierarchyItem && (
+          <HierarchyEditButton
+            collectionSlug={collectionConfig.slug}
+            hasUpdatePermission={currentHierarchyItem.hasUpdatePermission}
+            id={currentHierarchyItem.id}
+            key="edit-hierarchy-document"
+            title={title}
+          />
+        ),
+        hasCreatePermission && isBulkUploadEnabled && !isTrashRoute && (
+          <ListBulkUploadButton
+            collectionSlug={collectionConfig.slug}
+            hasCreatePermission={hasCreatePermission}
+            isBulkUploadEnabled={isBulkUploadEnabled}
+            key="list-header-bulk-upload"
+            onBulkUploadSuccess={onBulkUploadSuccess}
+          />
+        ),
+      ].filter(Boolean)}
+    />
+  )
+}

@@ -1,0 +1,418 @@
+import type { CollectionSlug, GlobalSlug, Payload, User } from '../index.js'
+import type { PayloadRequest, Where } from '../types/index.js'
+
+/**
+ * A permission object that can be used to determine if a user has access to a specific operation.
+ */
+export type Permission = {
+  permission: boolean
+  where?: Where
+}
+
+export type FieldsPermissions = {
+  [fieldName: string]: FieldPermissions
+}
+
+export type BlockPermissions = {
+  create: Permission
+  fields: FieldsPermissions
+  read: Permission
+  update: Permission
+  /** Permission to validate candidate block data without saving. */
+  validate: Permission
+}
+
+export type SanitizedBlockPermissions =
+  | {
+      fields: SanitizedFieldsPermissions
+    }
+  | true
+
+export type BlocksPermissions = {
+  [blockSlug: string]: BlockPermissions
+}
+
+export type SanitizedBlocksPermissions =
+  | {
+      [blockSlug: string]: SanitizedBlockPermissions
+    }
+  | true
+
+export type FieldPermissions = {
+  blocks?: BlocksPermissions
+  create?: Permission
+  fields?: FieldsPermissions
+  read?: Permission
+  update?: Permission
+  /** Permission to validate candidate field data without saving. */
+  validate?: Permission
+}
+
+export type SanitizedFieldPermissions =
+  | {
+      blocks?: SanitizedBlocksPermissions
+      create: true
+      fields?: SanitizedFieldsPermissions
+      read: true
+      update: true
+      validate: true
+    }
+  | true
+
+export type SanitizedFieldsPermissions =
+  | {
+      [fieldName: string]: SanitizedFieldPermissions
+    }
+  | true
+
+export type CollectionPermission = {
+  create?: Permission
+  delete?: Permission
+  fields: FieldsPermissions
+  read?: Permission
+  readVersions?: Permission
+  // Auth-enabled Collections only
+  unlock?: Permission
+  update?: Permission
+  /** Permission to validate collection candidate data without saving. */
+  validate?: Permission
+}
+
+export type SanitizedCollectionPermission = {
+  create?: true
+  delete?: true
+  fields: SanitizedFieldsPermissions
+  read?: true
+  readVersions?: true
+  // Auth-enabled Collections only
+  unlock?: true
+  update?: true
+  validate?: true
+}
+
+export type GlobalPermission = {
+  fields: FieldsPermissions
+  read?: Permission
+  readVersions?: Permission
+  update?: Permission
+  /** Permission to validate global candidate data without saving. */
+  validate?: Permission
+}
+
+export type SanitizedGlobalPermission = {
+  fields: SanitizedFieldsPermissions
+  read?: true
+  readVersions?: true
+  update?: true
+  validate?: true
+}
+
+export type DocumentPermissions = CollectionPermission | GlobalPermission
+
+export type SanitizedDocumentPermissions = SanitizedCollectionPermission | SanitizedGlobalPermission
+
+export type Permissions = {
+  canAccessAdmin: boolean
+  collections?: Record<CollectionSlug, CollectionPermission>
+  globals?: Record<GlobalSlug, GlobalPermission>
+}
+
+export type SanitizedPermissions = {
+  canAccessAdmin?: boolean
+  collections?: {
+    [collectionSlug: string]: SanitizedCollectionPermission
+  }
+  globals?: {
+    [globalSlug: string]: SanitizedGlobalPermission
+  }
+}
+
+/**
+ * Fields injected onto a user at authentication time. They are never stored in the database and
+ * never present on a plain document read (e.g. `payload.findByID`) - only on the authenticated
+ * user (`req.user`, login/auth/me results, auth strategies).
+ */
+export type AuthRuntimeFields = {
+  /**
+   * The session ID of the current request. May be present on request-authenticated users when
+   * sessions are enabled.
+   */
+  _sid?: string
+  /**
+   * The name of the auth strategy that authenticated the request (e.g. `local-jwt`).
+   */
+  _strategy?: string
+}
+
+/**
+ * Note: AuthenticatedUser still carries the write-only `password` from `User` (always `undefined` at runtime).
+ * Stripping it cleanly isn't possible, because auth operations build the authenticated user
+ * from a read `User` doc, so a `never`-typed `password` would break those assignments
+ */
+/**
+ * The signed-in user: the read user plus the runtime auth markers (`_strategy`, `_sid`).
+ * Server authentication APIs may retain complete fields, while response boundaries apply read access.
+ */
+export type AuthenticatedUser = AuthRuntimeFields & User
+
+export type UserSession = {
+  createdAt?: Date | null | string
+  expiresAt: Date | string
+  id: string
+  /**
+   * How many times the session was refreshed with a refresh token. Refresh tokens remember it, so
+   * the latest one can be told apart from older ones.
+   */
+  refreshCount?: null | number
+  /** When the session was last refreshed with a refresh token. */
+  refreshedAt?: Date | null | string
+}
+type GenerateVerifyEmailHTML<TUser = any> = (args: {
+  req: PayloadRequest
+  token: string
+  user: TUser
+}) => Promise<string> | string
+
+type GenerateVerifyEmailSubject<TUser = any> = (args: {
+  req: PayloadRequest
+  token: string
+  user: TUser
+}) => Promise<string> | string
+
+type GenerateForgotPasswordEmailHTML<TUser = any> = (args?: {
+  req?: PayloadRequest
+  token?: string
+  user?: TUser
+}) => Promise<string> | string
+
+type GenerateForgotPasswordEmailSubject<TUser = any> = (args?: {
+  req?: PayloadRequest
+  token?: string
+  user?: TUser
+}) => Promise<string> | string
+
+export type AuthStrategyFunctionArgs = {
+  /**
+   * Specifies whether or not response headers can be set from this strategy.
+   */
+  canSetHeaders?: boolean
+  headers: Request['headers']
+  isGraphQL?: boolean
+  payload: Payload
+  /** The request that initiated authentication, when available. */
+  req?: PayloadRequest
+  /**
+   * The AuthStrategy name property from the payload config.
+   */
+  strategyName?: string
+}
+
+export type AuthStrategyResult = {
+  responseHeaders?: Headers
+  user: AuthenticatedUser | null
+}
+
+export type AuthStrategyFunction = (
+  args: AuthStrategyFunctionArgs,
+) => AuthStrategyResult | Promise<AuthStrategyResult>
+export type AuthStrategy = {
+  authenticate: AuthStrategyFunction
+  name: string
+}
+
+export type LoginWithUsernameOptions =
+  | {
+      allowEmailLogin?: false
+      requireEmail?: boolean
+      // If `allowEmailLogin` is false, `requireUsername` must be true (default: true)
+      requireUsername?: true
+    }
+  | {
+      allowEmailLogin?: true
+      requireEmail?: boolean
+      requireUsername?: boolean
+    }
+
+type AuthCookies = {
+  domain?: string
+  sameSite?: 'Lax' | 'None' | 'Strict' | boolean
+  secure?: boolean
+}
+
+export interface IncomingAuthType {
+  /**
+   * Set cookie options, including secure, sameSite, and domain. For advanced users.
+   */
+  cookies?: AuthCookies
+  /**
+   * How many levels deep a user document should be populated when creating the JWT and binding the user to the req. Defaults to 0 and should only be modified if absolutely necessary, as this will affect performance.
+   * @default 0
+   */
+  depth?: number
+  /**
+   * Controls whether Payload's built-in local auth strategy is disabled. Set to `true` to disable
+   * local authentication or `false` to keep it enabled.
+   *
+   * Pass an object to disable local authentication while configuring how its fields are retained.
+   * Only disable local authentication if you have replaced Payload's auth mechanisms with your own.
+   * @default false
+   */
+  disableLocalStrategy?:
+    | {
+        /**
+         * Include auth fields on the collection even though the local strategy is disabled.
+         * Useful when you do not want the database or types to vary depending on the auth configuration.
+         */
+        enableFields?: true
+        /**
+         * When auth fields are retained, make the password field optional.
+         */
+        optionalPassword?: true
+      }
+    | boolean
+  /**
+   * Customize the way that the forgotPassword operation functions.
+   * @link https://payloadcms.com/docs/authentication/email#forgot-password
+   */
+  forgotPassword?: {
+    /**
+     * The number of milliseconds that the forgot password token should be valid for.
+     * @default 3600000 // 1 hour
+     */
+    expiration?: number
+    generateEmailHTML?: GenerateForgotPasswordEmailHTML
+    generateEmailSubject?: GenerateForgotPasswordEmailSubject
+    /**
+     * The minimum number of milliseconds between password reset emails for the same user.
+     * @default 15000
+     * Set to 0 to disable.
+     */
+    minRequestInterval?: number
+  }
+  /**
+   * Set the time (in milliseconds) that a user should be locked out if they fail authentication more times than maxLoginAttempts allows for.
+   */
+  lockTime?: number
+  /**
+   * Ability to allow users to login with username/password.
+   *
+   * @link https://payloadcms.com/docs/authentication/overview#login-with-username
+   */
+  loginWithUsername?: boolean | LoginWithUsernameOptions
+  /**
+   * Only allow a user to attempt logging in X amount of times. Automatically locks out a user from authenticating if this limit is passed. Set to 0 to disable.
+   */
+  maxLoginAttempts?: number
+  /**
+   * Lets clients stay logged in after their token expires. Logins also return a refresh token,
+   * which the refresh operation trades for a new token and a new refresh token. Each refresh token
+   * is meant to be used once. The one from right before still works for 30 seconds after a refresh,
+   * for clients that refresh twice at once. When a used one comes back otherwise, its session is
+   * logged out. Requires `useSessions`.
+   *
+   * Refresh tokens don't expire on their own. They work as long as their login session, which lasts
+   * `expiration` from the last refresh instead of `tokenExpiration`.
+   *
+   * @default false
+   * @link https://payloadcms.com/docs/authentication/overview#refresh-tokens
+   */
+  refreshTokens?:
+    | {
+        /**
+         * How many seconds a login session with a refresh token lasts without a refresh, which is
+         * how long its refresh token can be used. Every refresh starts this time again. The token
+         * itself still expires after `tokenExpiration`.
+         *
+         * @default 2592000 (30 days)
+         */
+        expiration?: number
+      }
+    | boolean
+  /***
+   * Set to true if you want to remove the token from the returned authentication API responses such as login or refresh.
+   */
+  removeTokenFromResponses?: true
+  /**
+   * Advanced - an array of custom authentification strategies to extend this collection's authentication with.
+   * @link https://payloadcms.com/docs/authentication/custom-strategies
+   */
+  strategies?: AuthStrategy[]
+  /**
+   * Controls how many seconds the token will be valid for. Default is 2 hours.
+   * @default 7200
+   * @link https://payloadcms.com/docs/authentication/overview#config-options
+   */
+  tokenExpiration?: number
+  /**
+   * Payload Authentication provides for API keys to be set on each user within an Authentication-enabled Collection.
+   * @default false
+   * @link https://payloadcms.com/docs/authentication/api-keys
+   */
+  useAPIKey?:
+    | {
+        /**
+         * Allows administrators to reveal stored API keys from the Admin Panel.
+         * @default false
+         */
+        reveal?: boolean
+      }
+    | boolean
+
+  /**
+   * Use sessions for authentication. Enabled by default.
+   * @default true
+   */
+  useSessions?: boolean
+
+  /**
+   * Set to true or pass an object with verification options to require users to verify by email before they are allowed to log into your app.
+   * @link https://payloadcms.com/docs/authentication/email#email-verification
+   */
+  verify?:
+    | {
+        generateEmailHTML?: GenerateVerifyEmailHTML
+        generateEmailSubject?: GenerateVerifyEmailSubject
+      }
+    | boolean
+}
+
+export type VerifyConfig = {
+  generateEmailHTML?: GenerateVerifyEmailHTML
+  generateEmailSubject?: GenerateVerifyEmailSubject
+}
+
+export interface Auth
+  extends
+    Omit<
+      IncomingAuthType,
+      | 'cookies'
+      | 'forgotPassword'
+      | 'lockTime'
+      | 'loginWithUsername'
+      | 'maxLoginAttempts'
+      | 'refreshTokens'
+      | 'strategies'
+      | 'tokenExpiration'
+      | 'useSessions'
+      | 'verify'
+    >,
+    Required<
+      Pick<
+        IncomingAuthType,
+        | 'forgotPassword'
+        | 'lockTime'
+        | 'maxLoginAttempts'
+        | 'strategies'
+        | 'tokenExpiration'
+        | 'useSessions'
+        | 'verify'
+      >
+    > {
+  cookies: Pick<AuthCookies, 'domain'> & Required<Pick<AuthCookies, 'sameSite' | 'secure'>>
+  loginWithUsername: false | Required<LoginWithUsernameOptions>
+  refreshTokens: { expiration: number } | false
+}
+
+export function hasWhereAccessResult(result: boolean | Where): result is Where {
+  return result && typeof result === 'object'
+}

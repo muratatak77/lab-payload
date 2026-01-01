@@ -1,0 +1,136 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../../../__helpers/shared/sdk/index.js'
+import type { Config } from '../../payload-types.js'
+
+import { checkFocusIndicators } from '../../../__helpers/e2e/checkFocusIndicators.js'
+import { addArrayRow } from '../../../__helpers/e2e/fields/array/index.js'
+import { runAxeScan } from '../../../__helpers/e2e/runAxeScan.js'
+import { AdminUrlUtil } from '../../../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../../../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../../../__helpers/shared/initPayloadE2ENoConfig.js'
+import { RESTClient } from '../../../__helpers/shared/rest.js'
+import { ensureCompilationIsDone } from '../../../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../../../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../../../playwright.config.js'
+import { collapsibleFieldsSlug } from '../../slugs.js'
+
+const filename = fileURLToPath(import.meta.url)
+const currentFolder = path.dirname(filename)
+const dirname = path.resolve(currentFolder, '../../')
+
+const { beforeAll, beforeEach, describe } = test
+
+let payload: PayloadTestSDK<Config>
+let client: RESTClient
+let page: Page
+let serverURL: string
+let url: AdminUrlUtil
+
+describe('Collapsibles', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      // prebuild,
+    }))
+
+    url = new AdminUrlUtil(serverURL, collapsibleFieldsSlug)
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+    if (client) {
+      await client.logout()
+    }
+    client = new RESTClient({ defaultSlug: 'users', serverURL })
+    await client.login()
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  test('should render collapsible as collapsed if initCollapsed is true', async () => {
+    await page.goto(url.create)
+    const collapsedCollapsible = page.locator(
+      '#field-collapsible-_index-1 .collapsible__toggle--collapsed',
+    )
+    await expect(collapsedCollapsible).toBeVisible()
+  })
+
+  test('should render CollapsibleLabel using a function', async () => {
+    const label = 'custom row label'
+    await page.goto(url.create)
+    await page.locator('#field-collapsible-_index-3-1 #field-nestedTitle').fill(label)
+    await wait(100)
+    const customCollapsibleLabel = page.locator(
+      `#field-collapsible-_index-3-1 .collapsible-field__row-label-wrap :text("${label}")`,
+    )
+    await expect(customCollapsibleLabel).toContainText(label)
+  })
+
+  test('should render CollapsibleLabel using a component', async () => {
+    const label = 'custom row label as component'
+    await page.goto(url.create)
+
+    const arrayWithCollapsibles = page.locator('#field-arrayWithCollapsibles')
+    // Wait for the field to be attached/visible (retries through the post-hydration
+    // re-render of the async RSC view) before the one-shot `scrollIntoViewIfNeeded`,
+    // which otherwise throws "Element is not attached to the DOM" if it lands mid-churn.
+    await expect(arrayWithCollapsibles).toBeVisible()
+    await arrayWithCollapsibles.scrollIntoViewIfNeeded()
+
+    await addArrayRow(page, { fieldName: 'arrayWithCollapsibles' })
+
+    const innerTextField = page.locator(
+      '#arrayWithCollapsibles-row-0 #field-collapsible-arrayWithCollapsibles__0___index-0 #field-arrayWithCollapsibles__0__innerCollapsible',
+    )
+    await expect(innerTextField).toBeVisible()
+    await innerTextField.fill(label)
+
+    const customCollapsibleLabel = page.locator(
+      `#field-arrayWithCollapsibles >> #arrayWithCollapsibles-row-0 >> .collapsible-field__row-label-wrap :text("${label}")`,
+    )
+
+    await expect(customCollapsibleLabel).toBeVisible()
+    await expect(customCollapsibleLabel).toHaveCSS('text-transform', 'uppercase')
+  })
+
+  describe.skip('A11y', () => {
+    test.fixme('Edit view should have no accessibility violations', async ({}, testInfo) => {
+      await page.goto(url.create)
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await runAxeScan({
+        exclude: ['.field-description'], // known issue - reported elsewhere @todo: remove this once fixed - see report https://github.com/payloadcms/payload/discussions/14489
+        include: ['.collection-edit__main'],
+        page,
+        testInfo,
+      })
+
+      expect(scanResults.violations.length).toBe(0)
+    })
+
+    test('Collapsible fields have focus indicators', async ({}, testInfo) => {
+      await page.goto(url.create)
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await checkFocusIndicators({
+        page,
+        selector: '.collection-edit__main',
+        testInfo,
+      })
+
+      expect(scanResults.totalFocusableElements).toBeGreaterThan(0)
+      expect(scanResults.elementsWithoutIndicators).toBe(0)
+    })
+  })
+})

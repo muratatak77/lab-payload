@@ -1,0 +1,391 @@
+import type { SharedLocalAPIOptions } from '../types/operations.js'
+import type { JobFromTask } from './config/types/workflowTypes.js'
+
+import {
+  createPayloadRequest,
+  Forbidden,
+  type Job,
+  type Payload,
+  type PayloadRequest,
+  type Sort,
+  type TypedJobs,
+  type Where,
+} from '../index.js'
+import { assertNoValidationWrite } from '../utilities/assertNoValidationWrite.js'
+import { jobAfterRead, jobsCollectionSlug } from './config/collection.js'
+import { handleSchedules, type HandleSchedulesResult } from './operations/handleSchedules/index.js'
+import { runJobs } from './operations/runJobs/index.js'
+import { updateJob, updateJobs } from './utilities/updateJob.js'
+
+export type RunJobsSilent =
+  | {
+      error?: boolean
+      info?: boolean
+    }
+  | boolean
+export const getJobsLocalAPI = (payload: Payload) => ({
+  handleSchedules: async (args?: {
+    /**
+     * If you want to schedule jobs from all queues, set this to true.
+     * If you set this to true, the `queue` property will be ignored.
+     *
+     * @default false
+     */
+    allQueues?: boolean
+    // By default, schedule all queues - only scheduling jobs scheduled to be added to the `default` queue would not make sense
+    // here, as you'd usually specify a different queue than `default` here, especially if this is used in combination with autorun.
+    // The `queue` property for setting up schedules is required, and not optional.
+    /**
+     * If you want to only schedule jobs that are set to schedule in a specific queue, set this to the queue name.
+     *
+     * @default jobs from the `default` queue will be executed.
+     */
+    queue?: string
+    req?: PayloadRequest
+  }): Promise<HandleSchedulesResult> => {
+    const newReq: PayloadRequest = args?.req ?? (await createPayloadRequest({ payload }))
+
+    assertNoValidationWrite(newReq)
+
+    return await handleSchedules({
+      allQueues: args?.allQueues,
+      queue: args?.queue,
+      req: newReq,
+    })
+  },
+  queue: async <
+    // eslint-disable-next-line @typescript-eslint/no-duplicate-type-constituents
+    TTaskOrWorkflowSlug extends keyof TypedJobs['tasks'] | keyof TypedJobs['workflows'],
+  >(
+    args: (
+      | {
+          input: TypedJobs['tasks'][TTaskOrWorkflowSlug]['input']
+          meta?: Job['meta']
+          /**
+           * The queue to add the job to.
+           * If not specified, the job will be added to the default queue.
+           *
+           * @default 'default'
+           */
+          queue?: string
+          req?: PayloadRequest
+          task: TTaskOrWorkflowSlug extends keyof TypedJobs['tasks'] ? TTaskOrWorkflowSlug : never
+          waitUntil?: Date
+          workflow?: never
+        }
+      | {
+          input: TypedJobs['workflows'][TTaskOrWorkflowSlug]['input']
+          meta?: Job['meta']
+          /**
+           * The queue to add the job to.
+           * If not specified, the job will be added to the default queue.
+           *
+           * @default 'default'
+           */
+          queue?: string
+          req?: PayloadRequest
+          task?: never
+          waitUntil?: Date
+          workflow: TTaskOrWorkflowSlug extends keyof TypedJobs['workflows']
+            ? TTaskOrWorkflowSlug
+            : never
+        }
+    ) &
+      Pick<SharedLocalAPIOptions, 'overrideAccess'>,
+  ): Promise<
+    TTaskOrWorkflowSlug extends keyof TypedJobs['workflows']
+      ? Job<TTaskOrWorkflowSlug>
+      : JobFromTask<TTaskOrWorkflowSlug>
+  > => {
+    const overrideAccess = args.overrideAccess ?? false
+    const req: PayloadRequest = args.req ?? (await createPayloadRequest({ payload }))
+
+    assertNoValidationWrite(req)
+
+    if (!overrideAccess) {
+      /**
+       * By default, jobsConfig.access.queue will be `defaultAccess` which is a function that returns `true` if the user is logged in.
+       */
+      const accessFn = payload.config.jobs?.access?.queue ?? (() => true)
+      const hasAccess = await accessFn({ req })
+      if (!hasAccess) {
+        throw new Forbidden(req.t)
+      }
+    }
+
+    let queue: string | undefined = undefined
+
+    // If user specifies queue, use that
+    if (args.queue) {
+      queue = args.queue
+    } else if (args.workflow) {
+      // Otherwise, if there is a workflow specified, and it has a default queue to use,
+      // use that
+      const workflow = payload.config.jobs?.workflows?.find(({ slug }) => slug === args.workflow)
+      if (workflow?.queue) {
+        queue = workflow.queue
+      }
+    }
+
+    const data: Partial<Job> = {
+      input: args.input,
+    }
+
+    if (queue) {
+      data.queue = queue
+    }
+    if (args.waitUntil) {
+      data.waitUntil = args.waitUntil?.toISOString()
+    }
+    if (args.workflow) {
+      data.workflowSlug = args.workflow as string
+    }
+    if (args.task) {
+      data.taskSlug = args.task as string
+    }
+
+    if (args.meta) {
+      data.meta = args.meta
+    }
+
+    let concurrencyKey: null | string = null
+    let supersedes = false
+    const queueName = queue || 'default'
+
+    if (args.workflow) {
+      const workflow = payload.config.jobs?.workflows?.find(({ slug }) => slug === args.workflow)
+      if (workflow?.concurrency) {
+        const concurrencyConfig = workflow.concurrency
+        if (typeof concurrencyConfig === 'function') {
+          concurrencyKey = concurrencyConfig({ input: args.input, queue: queueName })
+        } else {
+          concurrencyKey = concurrencyConfig.key({ input: args.input, queue: queueName })
+          supersedes = concurrencyConfig.supersedes ?? false
+        }
+      }
+    } else if (args.task) {
+      const task = payload.config.jobs?.tasks?.find(({ slug }) => slug === args.task)
+      if (task?.concurrency) {
+        const concurrencyConfig = task.concurrency
+        if (typeof concurrencyConfig === 'function') {
+          concurrencyKey = concurrencyConfig({ input: args.input, queue: queueName })
+        } else {
+          concurrencyKey = concurrencyConfig.key({ input: args.input, queue: queueName })
+          supersedes = concurrencyConfig.supersedes ?? false
+        }
+      }
+    }
+
+    if (concurrencyKey) {
+      data.concurrencyKey = concurrencyKey
+
+      // If supersedes is enabled, delete older pending jobs with the same key
+      if (supersedes) {
+        await payload.db.deleteMany({
+          collection: jobsCollectionSlug,
+          req,
+          where: {
+            and: [
+              { concurrencyKey: { equals: concurrencyKey } },
+              { processingUntil: { exists: false } },
+              { completedAt: { exists: false } },
+            ],
+          },
+        })
+      }
+    }
+
+    type ReturnType = TTaskOrWorkflowSlug extends keyof TypedJobs['workflows']
+      ? Job<TTaskOrWorkflowSlug>
+      : JobFromTask<TTaskOrWorkflowSlug> // Type assertion is still needed here
+
+    return jobAfterRead({
+      config: payload.config,
+      doc: await payload.db.create({
+        collection: jobsCollectionSlug,
+        data,
+        req,
+      }),
+    }) as unknown as ReturnType
+  },
+
+  run: async (
+    args?: {
+      /**
+       * If you want to run jobs from all queues, set this to true.
+       * If you set this to true, the `queue` property will be ignored.
+       *
+       * @default false
+       */
+      allQueues?: boolean
+      /**
+       * The maximum number of jobs to run in this invocation
+       *
+       * @default 10
+       */
+      limit?: number
+      /**
+       * Adjust the job processing order using a Payload sort string.
+       *
+       * FIFO would equal `createdAt` and LIFO would equal `-createdAt`.
+       */
+      processingOrder?: Sort
+      /**
+       * If you want to run jobs from a specific queue, set this to the queue name.
+       *
+       * @default jobs from the `default` queue will be executed.
+       */
+      queue?: string
+      req?: PayloadRequest
+      /**
+       * By default, jobs are run in parallel.
+       * If you want to run them in sequence, set this to true.
+       */
+      sequential?: boolean
+      /**
+       * If set to true, the job system will not log any output to the console (for both info and error logs).
+       * Can be an option for more granular control over logging.
+       *
+       * This will not automatically affect user-configured logs (e.g. if you call `console.log` or `payload.logger.info` in your job code).
+       *
+       * @default false
+       */
+      silent?: RunJobsSilent
+      where?: Where
+    } & Pick<SharedLocalAPIOptions, 'overrideAccess'>,
+  ): Promise<ReturnType<typeof runJobs>> => {
+    const newReq: PayloadRequest = args?.req ?? (await createPayloadRequest({ payload }))
+
+    return await runJobs({
+      allQueues: args?.allQueues,
+      limit: args?.limit,
+      overrideAccess: args?.overrideAccess ?? false,
+      processingOrder: args?.processingOrder,
+      queue: args?.queue,
+      req: newReq,
+      sequential: args?.sequential,
+      silent: args?.silent,
+      where: args?.where,
+    })
+  },
+
+  runByID: async (
+    args: {
+      id: number | string
+      req?: PayloadRequest
+      /**
+       * If set to true, the job system will not log any output to the console (for both info and error logs).
+       * Can be an option for more granular control over logging.
+       *
+       * This will not automatically affect user-configured logs (e.g. if you call `console.log` or `payload.logger.info` in your job code).
+       *
+       * @default false
+       */
+      silent?: RunJobsSilent
+    } & Pick<SharedLocalAPIOptions, 'overrideAccess'>,
+  ): Promise<ReturnType<typeof runJobs>> => {
+    const newReq: PayloadRequest = args.req ?? (await createPayloadRequest({ payload }))
+
+    return await runJobs({
+      id: args.id,
+      overrideAccess: args.overrideAccess ?? false,
+      req: newReq,
+      silent: args.silent,
+    })
+  },
+
+  cancel: async (
+    args: {
+      queue?: string
+      req?: PayloadRequest
+      where: Where
+    } & Pick<SharedLocalAPIOptions, 'overrideAccess'>,
+  ): Promise<void> => {
+    const req: PayloadRequest = args.req ?? (await createPayloadRequest({ payload }))
+
+    const overrideAccess = args.overrideAccess ?? false
+    if (!overrideAccess) {
+      /**
+       * By default, jobsConfig.access.cancel will be `defaultAccess` which is a function that returns `true` if the user is logged in.
+       */
+      const accessFn = payload.config.jobs?.access?.cancel ?? (() => true)
+      const hasAccess = await accessFn({ req })
+      if (!hasAccess) {
+        throw new Forbidden(req.t)
+      }
+    }
+
+    const and: Where[] = [
+      args.where,
+      {
+        completedAt: {
+          exists: false,
+        },
+      },
+      {
+        hasError: {
+          not_equals: true,
+        },
+      },
+    ]
+
+    if (args.queue) {
+      and.push({
+        queue: {
+          equals: args.queue,
+        },
+      })
+    }
+
+    await updateJobs({
+      data: {
+        completedAt: null,
+        error: {
+          cancelled: true,
+        },
+        hasError: true,
+        processingUntil: null,
+        waitUntil: null,
+      },
+      req,
+      returning: false,
+      where: { and },
+    })
+  },
+
+  cancelByID: async (
+    args: {
+      id: number | string
+      req?: PayloadRequest
+    } & Pick<SharedLocalAPIOptions, 'overrideAccess'>,
+  ): Promise<void> => {
+    const req: PayloadRequest = args.req ?? (await createPayloadRequest({ payload }))
+
+    const overrideAccess = args.overrideAccess ?? false
+    if (!overrideAccess) {
+      /**
+       * By default, jobsConfig.access.cancel will be `defaultAccess` which is a function that returns `true` if the user is logged in.
+       */
+      const accessFn = payload.config.jobs?.access?.cancel ?? (() => true)
+      const hasAccess = await accessFn({ req })
+      if (!hasAccess) {
+        throw new Forbidden(req.t)
+      }
+    }
+
+    await updateJob({
+      id: args.id,
+      data: {
+        completedAt: null,
+        error: {
+          cancelled: true,
+        },
+        hasError: true,
+        processingUntil: null,
+        waitUntil: null,
+      },
+      req,
+      returning: false,
+    })
+  },
+})

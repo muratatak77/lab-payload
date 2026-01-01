@@ -1,0 +1,18 @@
+import type { UseDraggableArguments } from '@dnd-kit/core'
+import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities/index.js'
+import type React from 'react'
+
+import type { UseDraggableSortableReturn } from '../useDraggableSortable/types.js'
+
+export type DragHandleProps = {
+  attributes: React.AriaAttributes & UseDraggableArguments['attributes']
+  draggable?: boolean
+  listeners: SyntheticListenerMap
+  setActivatorNodeRef?: (node: HTMLElement | null) => void
+} & UseDraggableArguments
+
+export type ChildFunction = (args: UseDraggableSortableReturn) => React.ReactNode
+
+export type Props = {
+  children: ChildFunction
+} & UseDraggableArguments

@@ -1,0 +1,62 @@
+import { httpStatus } from '../utilities/httpStatus.js'
+
+/** @deprecated Use `instanceof APIError` instead of name comparison. */
+export const APIErrorName = 'APIError'
+
+class ExtendableError<TData extends object = { [key: string]: unknown }> extends Error {
+  data: TData
+
+  isOperational: boolean
+
+  isPublic: boolean
+
+  status: number
+
+  constructor(message: string, status: number, data: TData, isPublic: boolean) {
+    super(message, {
+      // show data in cause
+      cause: data,
+    })
+    this.message = message
+    this.status = status
+    this.data = data
+    this.isPublic = isPublic
+    this.isOperational = true // This is required since bluebird 4 doesn't append it anymore.
+    Error.captureStackTrace(this, this.constructor)
+  }
+}
+
+/**
+ * Class representing an API error.
+ *
+ * Every error class sets `this.name` explicitly rather than reading `this.constructor.name`, as
+ * minifiers rename classes and can inline them as anonymous class expressions, which would leave
+ * `name` mangled or empty in production builds. Subclasses should do the same.
+ * @extends ExtendableError
+ */
+export class APIError<
+  TData extends null | object = { [key: string]: unknown } | null,
+  // @ts-expect-error - vestiges of when tsconfig was not strict. Feel free to improve
+> extends ExtendableError<TData> {
+  /**
+   * Creates an API error.
+   * @param {string} message - Error message.
+   * @param {number} status - HTTP status code of error.
+   * @param {object} data - response data to be returned.
+   * @param {boolean} isPublic - Whether the message should be visible to user or not.
+   */
+  constructor(
+    message: string,
+    status: number = httpStatus.INTERNAL_SERVER_ERROR,
+    data: TData = null!,
+    isPublic?: boolean,
+  ) {
+    super(
+      message,
+      status,
+      data,
+      typeof isPublic === 'boolean' ? isPublic : status !== httpStatus.INTERNAL_SERVER_ERROR,
+    )
+    this.name = 'APIError'
+  }
+}

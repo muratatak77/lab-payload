@@ -1,0 +1,43 @@
+'use client'
+import type { JSONFieldClientProps, Where } from 'payload'
+
+import React from 'react'
+
+import { FieldLabel } from '../../../../fields/FieldLabel/index.js'
+import { useField } from '../../../../forms/useField/index.js'
+import { useConfig } from '../../../../providers/Config/index.js'
+import { WhereBuilder } from '../../../WhereBuilder/index.js'
+import '../fields.css'
+
+export const QueryPresetsWhereField: React.FC<JSONFieldClientProps> = ({
+  field: { label, required },
+}) => {
+  const { path, setValue, value } = useField<Where>()
+  const relatedCollectionField = useField({ path: 'relatedCollection' })
+  const relatedCollection = relatedCollectionField.value as string | undefined
+  const { getEntityConfig } = useConfig()
+
+  if (!relatedCollection) {
+    return (
+      <div className="field-type query-preset-where-field">
+        <FieldLabel as="h3" label={label} path={path} required={required} />
+        <p className="query-preset-where-field__hint">
+          Select the related collection to configure filters.
+        </p>
+      </div>
+    )
+  }
+
+  const collectionConfig = getEntityConfig({ collectionSlug: relatedCollection })
+
+  return (
+    <div className="field-type query-preset-where-field">
+      <WhereBuilder
+        collectionSlug={relatedCollection}
+        fields={collectionConfig?.fields ?? []}
+        onChange={(where) => setValue(where)}
+        value={value ?? undefined}
+      />
+    </div>
+  )
+}

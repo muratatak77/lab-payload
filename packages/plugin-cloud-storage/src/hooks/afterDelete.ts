@@ -1,0 +1,69 @@
+import type { CollectionAfterDeleteHook, CollectionConfig, FileData, TypeWithID } from 'payload'
+
+import type { GeneratedAdapter, TypeWithPrefix } from '../types.js'
+
+import { buildPrefixWithObjectKey } from '../utilities/buildPrefixWithObjectKey.js'
+import { buildStoragePathData } from '../utilities/buildStoragePathData.js'
+
+interface Args {
+  adapter: GeneratedAdapter
+  collection: CollectionConfig
+  collectionPrefix?: string
+  useCompositePrefixes?: boolean
+}
+
+export const getAfterDeleteHook = ({
+  adapter,
+  collection,
+  collectionPrefix,
+  useCompositePrefixes,
+}: Args): CollectionAfterDeleteHook<FileData & TypeWithID & TypeWithPrefix> => {
+  return async ({ id, doc, req }) => {
+    // Managed objects are deleted after the operation commits and all references are checked.
+    const managedDeletedUploads = req.context?._payloadManagedDeletedUploads as
+      | Set<string>
+      | undefined
+    if (
+      collection.versions ||
+      (Boolean(doc.original) && typeof doc.original?.filename === 'string') ||
+      managedDeletedUploads?.has(JSON.stringify([collection.slug, String(id)]))
+    ) {
+      return doc
+    }
+
+    try {
+      // Fold `_objectKey` so deletes target the real object folder.
+      const docPrefix = buildPrefixWithObjectKey({
+        objectKey: (doc as { _objectKey?: string })._objectKey,
+        prefix: doc.prefix,
+      })
+
+      const filesToDelete: string[] = [
+        doc.filename,
+        ...Object.values(doc?.variants || []).map(
+          (resizedFileData) => resizedFileData?.filename as string,
+        ),
+      ]
+
+      const promises = filesToDelete.map(async (filename) => {
+        if (filename) {
+          const { storageFilePath } = buildStoragePathData({
+            collectionPrefix,
+            docPrefix,
+            filename,
+            useCompositePrefixes,
+          })
+          await adapter.handleDelete({ collection, doc, filename, req, storageFilePath })
+        }
+      })
+
+      await Promise.all(promises)
+    } catch (err: unknown) {
+      req.payload.logger.error({
+        err,
+        msg: `There was an error while deleting files corresponding to the ${typeof collection.labels?.singular === 'string' ? collection.labels.singular : collection.slug} with ID ${doc.id}.`,
+      })
+    }
+    return doc
+  }
+}

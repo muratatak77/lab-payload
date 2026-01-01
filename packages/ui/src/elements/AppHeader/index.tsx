@@ -1,0 +1,133 @@
+'use client'
+import { getTranslation } from '@payloadcms/translations'
+import React, { useEffect, useRef, useState } from 'react'
+
+import { useElementHeightVariable } from '../../hooks/useElementHeightVariable.js'
+import { ChevronIcon } from '../../icons/Chevron/index.js'
+import { LanguageIcon } from '../../icons/Language/index.js'
+import { SidebarIcon } from '../../icons/Sidebar/index.js'
+import { useActions } from '../../providers/Actions/index.js'
+import { useConfig } from '../../providers/Config/index.js'
+import { useEmbed } from '../../providers/Embed/index.js'
+import { useLocale } from '../../providers/Locale/index.js'
+import { useTranslation } from '../../providers/Translation/index.js'
+import { Button } from '../Button/index.js'
+import { Localizer } from '../Localizer/index.js'
+import { useNav } from '../Nav/context.js'
+import { StepNav } from '../StepNav/index.js'
+import './index.css'
+
+const baseClass = 'app-header'
+
+export function AppHeader() {
+  const { i18n, t } = useTranslation()
+  const locale = useLocale()
+  const localeLabel = locale && getTranslation(locale.label, i18n)
+  const { Actions } = useActions()
+
+  const { navOpen, navToggleRef, setNavOpen } = useNav()
+  const { isEmbedded } = useEmbed()
+
+  const {
+    config: { localization },
+  } = useConfig()
+
+  const headerRef = useRef<HTMLElement>(null)
+  const customControlsRef = useRef<HTMLDivElement>(null)
+  const [isScrollable, setIsScrollable] = useState(false)
+
+  useElementHeightVariable({ cssVar: '--app-header-height', ref: headerRef })
+
+  useEffect(() => {
+    const checkIsScrollable = () => {
+      const el = customControlsRef.current
+      if (el) {
+        const scrollable = el.scrollWidth > el.clientWidth
+        setIsScrollable(scrollable)
+      }
+    }
+
+    checkIsScrollable()
+    window.addEventListener('resize', checkIsScrollable)
+
+    return () => {
+      window.removeEventListener('resize', checkIsScrollable)
+    }
+  }, [Actions])
+
+  const ActionComponents = Actions ? Object.values(Actions) : []
+
+  return (
+    <header
+      className={[
+        baseClass,
+        navOpen && `${baseClass}--nav-open`,
+        isEmbedded && `${baseClass}--embedded`,
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      ref={headerRef}
+    >
+      <div className={`${baseClass}__content`}>
+        <div className={`${baseClass}__wrapper`}>
+          <div className={`${baseClass}__controls-wrapper`}>
+            <div className={`${baseClass}__step-nav-wrapper`}>
+              <Button
+                aria-expanded={navOpen}
+                aria-label={`${navOpen ? t('general:close') : t('general:open')} ${t('general:menu')}`}
+                buttonStyle="ghost"
+                className={`${baseClass}__sidebar-toggle`}
+                icon={<SidebarIcon />}
+                onClick={() => setNavOpen(!navOpen, true)}
+                ref={navToggleRef}
+                type="button"
+              />
+              <div className={`${baseClass}__step-nav-wrapper`}>
+                <StepNav className={`${baseClass}__step-nav`} />
+              </div>
+            </div>
+            <div className={`${baseClass}__actions-wrapper`}>
+              <div className={`${baseClass}__actions`} ref={customControlsRef}>
+                {ActionComponents.map((Action, i) => (
+                  <div
+                    className={
+                      isScrollable && i === ActionComponents.length - 1
+                        ? `${baseClass}__last-action`
+                        : ''
+                    }
+                    key={i}
+                  >
+                    {Action}
+                  </div>
+                ))}
+              </div>
+              {isScrollable && <div className={`${baseClass}__gradient-placeholder`} />}
+            </div>
+            {localization && (
+              <Localizer
+                className={`${baseClass}__localizer`}
+                renderButton={({ active, onClick, onKeyDown, ...ariaProps }) => (
+                  <Button
+                    aria-label={t('general:locale')}
+                    buttonStyle="secondary"
+                    extraButtonProps={{ onKeyDown, style: { padding: '0 var(--spacer-1) 0 0' } }}
+                    icon={<LanguageIcon size={24} />}
+                    iconPosition="left"
+                    onClick={onClick}
+                    selected={active}
+                    {...ariaProps}
+                  >
+                    <div className="localizer__button-content">
+                      {localeLabel}
+                      <ChevronIcon direction={active ? 'up' : 'down'} size={16} />
+                    </div>
+                  </Button>
+                )}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </header>
+  )
+}

@@ -1,0 +1,203 @@
+---
+title: Dashboard Widgets
+label: Dashboard
+order: 45
+desc: Create custom dashboard widgets to display data, analytics, or any other content in the Payload Admin Panel.
+keywords: dashboard, widgets, custom components, admin, React
+---
+
+<Banner type="warning">
+  This new Modular Dashboard is an experimental feature and may change in future
+  releases. Use at your own risk.
+</Banner>
+
+The Dashboard is the first page users see when they log into the Payload Admin Panel. By default, it displays cards with the collections and globals. You can customize the dashboard by adding **widgets** - modular components that can display data, analytics, or any other content.
+
+<YouTube
+  id="fXF34Ef6G84"
+  title="Create a flexible admin panel with the new Modular Dashboard feature"
+/>
+
+One of the coolest things about widgets is that each plugin can define its own. Some examples:
+
+- Analytics
+- Error Reporting
+- Number of documents that meet a certain filter
+- Jobs recently executed
+
+### Defining Widgets
+
+Define widgets in your Payload config using the `admin.dashboard.widgets` property:
+
+```ts
+import { buildConfig } from 'payload'
+
+export default buildConfig({
+  admin: {
+    dashboard: {
+      widgets: [
+        {
+          slug: 'sales-summary',
+          Component: './components/SalesSummary.tsx#default',
+          fields: [
+            { name: 'title', type: 'text' },
+            {
+              name: 'timeframe',
+              type: 'select',
+              options: ['daily', 'weekly', 'monthly', 'yearly'],
+            },
+            { name: 'showTrend', type: 'checkbox' },
+          ],
+          minWidth: 'small',
+          maxWidth: 'medium',
+        },
+      ],
+    },
+  },
+})
+```
+
+### Widget Configuration
+
+| Property       | Type          | Description                                                          |
+| -------------- | ------------- | -------------------------------------------------------------------- |
+| `slug` \*      | `string`      | Unique identifier for the widget                                     |
+| `Component` \* | `string`      | Path to the widget component (supports `#` syntax for named exports) |
+| `fields`       | `Field[]`     | Optional widget-specific form fields shown in the edit drawer        |
+| `minWidth`     | `WidgetWidth` | Minimum width the widget can be resized to (default: `'x-small'`)    |
+| `maxWidth`     | `WidgetWidth` | Maximum width the widget can be resized to (default: `'full'`)       |
+
+**WidgetWidth Values:** `'x-small' | 'small' | 'medium' | 'large' | 'x-large' | 'full'`.
+
+### Creating a Widget Component
+
+Widgets are React Server Components that receive `WidgetServerProps`:
+
+```tsx
+import type { WidgetServerProps } from 'payload'
+
+export default async function UserStatsWidget({ req }: WidgetServerProps) {
+  const { payload } = req
+
+  // Fetch data server-side
+  const userCount = await payload.count({
+    collection: 'users',
+    overrideAccess: false,
+    req,
+  })
+
+  return (
+    <div className="card">
+      <h3>Total Users</h3>
+      <p style={{ fontSize: '32px', fontWeight: 'bold' }}>
+        {userCount.totalDocs}
+      </p>
+    </div>
+  )
+}
+```
+
+For visual consistency with the Payload UI, we recommend:
+
+1. Use the `card` class for card-style widget roots. It applies the same theme-aware surface, border, radius, and padding as Payload's built-in dashboard cards; omit it for unframed content.
+2. Use our theme variables for backgrounds and text colors. For example, use `var(--color-bg)` for backgrounds and `var(--color-text)` for text colors.
+
+### Default Layout
+
+Control the initial dashboard layout with the `defaultLayout` property:
+
+```ts
+export default buildConfig({
+  admin: {
+    dashboard: {
+      defaultLayout: ({ req }) => {
+        // Customize layout based on user role or other factors
+        const isAdmin = req.user?.roles?.includes('admin')
+
+        return [
+          { widgetSlug: 'collections', width: 'full' },
+          {
+            widgetSlug: 'sales-summary',
+            data: {
+              timeframe: 'monthly',
+              title: 'Revenue Overview',
+            },
+            width: isAdmin ? 'medium' : 'small',
+          },
+          { widgetSlug: 'user-stats', width: isAdmin ? 'medium' : 'full' },
+          { widgetSlug: 'revenue-chart', width: 'full' },
+        ]
+      },
+      widgets: [
+        // ... widget definitions
+      ],
+    },
+  },
+})
+```
+
+The `defaultLayout` function receives the request object and should return an array of `WidgetInstance` objects.
+
+If your widget has `fields`, you can type `widgetData` with generated widget types:
+
+```tsx
+import type { WidgetServerProps } from 'payload'
+
+import type { SalesSummaryWidget } from '../payload-types'
+
+export default async function SalesSummaryWidgetComponent({
+  widgetData,
+}: WidgetServerProps<SalesSummaryWidget>) {
+  const title = widgetData?.title ?? 'Sales Summary'
+  const timeframe = widgetData?.timeframe ?? 'monthly'
+
+  return (
+    <div className="card">
+      <h3>
+        {title} ({timeframe})
+      </h3>
+    </div>
+  )
+}
+```
+
+#### WidgetInstance Type
+
+| Property        | Type          | Description                                          |
+| --------------- | ------------- | ---------------------------------------------------- |
+| `widgetSlug` \* | `string`      | Slug of the widget to display                        |
+| `data`          | `object`      | Optional widget-specific data passed to `widgetData` |
+| `width`         | `WidgetWidth` | Initial width of the widget (default: minWidth)      |
+
+`width` is constrained by each widget's `minWidth` and `maxWidth` when types are generated.
+
+<Banner type="success">
+  **Tip:** Users can customize their dashboard layout, which is saved to their
+  preferences. The `defaultLayout` is only used for first-time visitors or after
+  a layout reset.
+</Banner>
+
+### Built-in Widgets
+
+Payload includes built-in `welcome`, `activity`, `collections`, and `collection-query` widgets.
+The `activity` widget has Recently Viewed and Pinned tabs. It opens on Pinned when the user has pinned documents, and on Recently Viewed otherwise. It loads the visible page on demand and displays a single grid row, with up to four documents per page. Its collection filter applies only to Recently Viewed.
+The `collections` widget displays collection and global cards.
+The `collection-query` widget displays documents from a selected collection.
+
+If you don't define a `defaultLayout`, `welcome`, `activity`, and `collections` appear in that order, each at full width.
+The `collection-query` widget is available through the **Add +** menu.
+
+### User Customization
+
+Users can customize their dashboard by:
+
+1. Clicking the dashboard dropdown in the breadcrumb
+2. Selecting "Edit Dashboard"
+3. Adding widgets via the "Add +" button
+4. Editing widget data (for widgets with `fields`) via the edit button
+5. Resizing widgets using the width dropdown on each widget (if multiple widths are allowed)
+6. Reordering widgets via drag-and-drop
+7. Deleting widgets using the delete button
+8. Saving changes or canceling to revert
+
+Users can also reset their dashboard to the default layout using the "Reset Layout" option.

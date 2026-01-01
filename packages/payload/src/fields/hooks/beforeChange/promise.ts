@@ -1,0 +1,886 @@
+import type { RichTextAdapter } from '../../../admin/RichText.js'
+import type { SanitizedCollectionConfig } from '../../../collections/config/types.js'
+import type { ValidationFieldError } from '../../../errors/index.js'
+import type { SanitizedGlobalConfig } from '../../../globals/config/types.js'
+import type { FieldOperation, JsonObject, PayloadRequest } from '../../../types/index.js'
+import type { Block, Field, TabAsField, Validate } from '../../config/types.js'
+
+import { MissingEditorProp } from '../../../errors/index.js'
+import { type RequestContext, validateBlocksFilterOptions } from '../../../index.js'
+import { deepMergeWithSourceArrays } from '../../../utilities/deepMerge.js'
+import { getTranslatedLabel } from '../../../utilities/getTranslatedLabel.js'
+import { isolateObjectProperty } from '../../../utilities/isolateObjectProperty.js'
+import { fieldAffectsData, fieldShouldBeLocalized, tabHasName } from '../../config/types.js'
+import { getFieldPaths } from '../../getFieldPaths.js'
+import { flattenValidationData } from './flattenValidationData.js'
+import { getExistingRowDoc } from './getExistingRowDoc.js'
+import { traverseFields } from './traverseFields.js'
+
+function buildFieldLabel(parentLabel: string, label: string | undefined): string {
+  if (!label) {
+    return parentLabel
+  }
+  const capitalizedLabel = label.charAt(0).toUpperCase() + label.slice(1)
+  return parentLabel && capitalizedLabel
+    ? `${parentLabel} > ${capitalizedLabel}`
+    : capitalizedLabel || parentLabel
+}
+
+type Args = {
+  /**
+   * Data of the nearest parent block. If no parent block exists, this will be the `undefined`
+   */
+  blockData?: JsonObject
+  blockFields?: Field[]
+  collection: null | SanitizedCollectionConfig
+  context: RequestContext
+  data: JsonObject
+  doc: JsonObject
+  docWithLocales: JsonObject
+  errors: ValidationFieldError[]
+  field: Field | TabAsField
+  fieldIndex: number
+  /**
+   * Built up labels of parent fields
+   *
+   * @example "Group Field > Tab Field > Text Field"
+   */
+  fieldLabelPath: string
+  global: null | SanitizedGlobalConfig
+  id?: number | string
+  isValidationOperation: boolean
+  mergeLocaleActions: (() => Promise<void> | void)[]
+  operation: FieldOperation
+  overrideAccess: boolean
+  parentIndexPath: string
+  parentIsLocalized: boolean
+  parentPath: string
+  parentSchemaPath: string
+  req: PayloadRequest
+  siblingData: JsonObject
+  siblingDoc: JsonObject
+  siblingDocWithLocales?: JsonObject
+  siblingFields?: (Field | TabAsField)[]
+  skipHooks: boolean
+  skipValidation: boolean
+  submittedTopLevelFieldNames?: ReadonlySet<string>
+}
+
+// This function is responsible for the following actions, in order:
+// - Run condition
+// - Execute field hooks
+// - Validate data
+// - Transform data for storage
+// - beforeDuplicate hooks (if duplicate)
+// - Unflatten locales
+
+export const promise = async ({
+  id,
+  blockData,
+  blockFields,
+  collection,
+  context,
+  data,
+  doc,
+  docWithLocales,
+  errors,
+  field,
+  fieldIndex,
+  fieldLabelPath,
+  global,
+  isValidationOperation,
+  mergeLocaleActions,
+  operation,
+  overrideAccess,
+  parentIndexPath,
+  parentIsLocalized,
+  parentPath,
+  parentSchemaPath,
+  req,
+  siblingData,
+  siblingDoc,
+  siblingDocWithLocales,
+  siblingFields,
+  skipHooks,
+  skipValidation,
+  submittedTopLevelFieldNames,
+}: Args): Promise<void> => {
+  const { indexPath, path, schemaPath } = getFieldPaths({
+    field,
+    index: fieldIndex,
+    parentIndexPath,
+    parentPath,
+    parentSchemaPath,
+  })
+
+  const { localization } = req.payload.config
+  const defaultLocale = localization ? localization?.defaultLocale : 'en'
+  const operationLocale = req.locale || defaultLocale
+
+  const pathSegments = path ? path.split('.') : []
+  const schemaPathSegments = schemaPath ? schemaPath.split('.') : []
+  const indexPathSegments = indexPath ? indexPath.split('-').filter(Boolean)?.map(Number) : []
+
+  const passesCondition = field.admin?.condition
+    ? Boolean(
+        field.admin.condition(data, siblingData, {
+          blockData: blockData!,
+          operation,
+          path: pathSegments,
+          user: req.user,
+        }),
+      )
+    : true
+  const isOutsideSubmittedFieldScope =
+    submittedTopLevelFieldNames !== undefined &&
+    fieldAffectsData(field) &&
+    !submittedTopLevelFieldNames.has(pathSegments[0]!)
+  let skipValidationFromHere = skipValidation || isOutsideSubmittedFieldScope || !passesCondition
+
+  if (fieldAffectsData(field)) {
+    const shouldSkipValidationForLocalizedFallback =
+      !isValidationOperation &&
+      operation !== 'validate' &&
+      fieldShouldBeLocalized({ field, parentIsLocalized }) &&
+      operationLocale !== defaultLocale &&
+      ['array', 'blocks'].includes(field.type) &&
+      siblingData[field.name!] === null
+
+    if (shouldSkipValidationForLocalizedFallback) {
+      skipValidationFromHere = true
+    }
+
+    // Execute hooks
+    if (!skipHooks && 'hooks' in field && field.hooks?.beforeChange) {
+      for (const hook of field.hooks.beforeChange) {
+        const hookedValue = await hook({
+          blockData,
+          collection,
+          context,
+          data,
+          field,
+          global,
+          indexPath: indexPathSegments,
+          operation,
+          originalDoc: doc,
+          overrideAccess,
+          path: pathSegments,
+          previousSiblingDoc: siblingDoc,
+          previousValue: siblingDoc[field.name],
+          req,
+          schemaPath: schemaPathSegments,
+          siblingData,
+          siblingDocWithLocales,
+          siblingFields: siblingFields!,
+          value: siblingData[field.name],
+        })
+
+        if (hookedValue !== undefined) {
+          siblingData[field.name] = hookedValue
+        }
+      }
+    }
+
+    if (hasInvalidFieldValueShape({ field, value: siblingData[field.name!] })) {
+      errors.push({
+        label: buildFieldLabel(
+          fieldLabelPath,
+          getTranslatedLabel(field?.label || field?.name, req.i18n),
+        ),
+        message: req.t('validation:invalidInput'),
+        path,
+      })
+      return
+    }
+
+    // Validate
+    if (!skipValidationFromHere && 'validate' in field && field.validate) {
+      const valueToValidate = siblingData[field.name]
+
+      // With `locale: 'all'` a localized scalar is a locale-keyed object; validate each locale, not the
+      // wrapper. Containers (`group`/`array`/`blocks`) are excluded - per-locale child validation is a follow-up.
+      const isLocaleKeyedValue =
+        operationLocale === 'all' &&
+        localization &&
+        fieldShouldBeLocalized({ field, parentIsLocalized }) &&
+        field.type !== 'group' &&
+        valueToValidate !== null &&
+        typeof valueToValidate === 'object' &&
+        !Array.isArray(valueToValidate)
+
+      const localizedValuesToValidate: { locale?: string; value: unknown }[] = isLocaleKeyedValue
+        ? localization.localeCodes
+            .filter((locale) => locale in (valueToValidate as JsonObject))
+            .map((locale) => ({ locale, value: (valueToValidate as JsonObject)[locale] }))
+        : [{ value: valueToValidate }]
+
+      // No recognized locales (e.g. `{}`): validate `undefined` once so required/optional still apply.
+      if (localizedValuesToValidate.length === 0) {
+        localizedValuesToValidate.push({ value: undefined })
+      }
+
+      let jsonError: object
+
+      if (field.type === 'json' && typeof siblingData[field.name] === 'string') {
+        try {
+          JSON.parse(siblingData[field.name] as string)
+        } catch (e) {
+          jsonError = e as object
+        }
+      }
+
+      const validateFn: Validate<object, object, object, object> = field.validate as Validate<
+        object,
+        object,
+        object,
+        object
+      >
+
+      let validationResult: string | true = true
+      let failedLocale: string | undefined
+
+      const validationData = deepMergeWithSourceArrays<JsonObject>(doc, data)
+      const validationSiblingData = deepMergeWithSourceArrays<JsonObject>(siblingDoc, siblingData)
+
+      for (const { locale, value } of localizedValuesToValidate) {
+        // Scope `req.locale` to the locale being validated without mutating the shared request.
+        const validationReq = locale ? isolateObjectProperty(req, 'locale') : req
+        if (locale) {
+          validationReq.locale = locale
+        }
+
+        const localeContext = locale
+          ? {
+              blockData:
+                blockData && blockFields
+                  ? flattenValidationData({
+                      config: req.payload.config,
+                      data: blockData,
+                      fields: blockFields,
+                      locale,
+                      parentIsLocalized,
+                    })
+                  : blockData,
+              data: flattenValidationData({
+                config: req.payload.config,
+                data: validationData,
+                fields: (collection?.fields || global?.fields)!,
+                locale,
+              }),
+              siblingData: flattenValidationData({
+                config: req.payload.config,
+                data: validationSiblingData,
+                fields: siblingFields!,
+                locale,
+                parentIsLocalized,
+              }),
+            }
+          : { blockData, data: validationData, siblingData: validationSiblingData }
+
+        validationResult = await validateFn(value as never, {
+          ...field,
+          id,
+          blockData: localeContext.blockData!,
+          collectionSlug: collection?.slug,
+          data: localeContext.data,
+          event: 'submit',
+          // @ts-expect-error generic validation options cannot infer JSON fields
+          jsonError,
+          operation,
+          overrideAccess,
+          path: pathSegments,
+          preferences: { fields: {} },
+          previousValue: locale
+            ? (siblingDoc[field.name] as JsonObject)?.[locale]
+            : siblingDoc[field.name],
+          req: validationReq,
+          siblingData: localeContext.siblingData,
+        })
+
+        if (typeof validationResult === 'string') {
+          failedLocale = locale
+          break
+        }
+      }
+
+      if (typeof validationResult === 'string') {
+        let filterOptionsError = false
+
+        if (field.type === 'blocks' && field.filterOptions) {
+          // Re-run filteroptions. If the validation error is due to filteroptions, we need to add error paths to all the blocks
+          // that are no longer valid
+          const validationResult = await validateBlocksFilterOptions({
+            id,
+            data,
+            filterOptions: field.filterOptions,
+            req,
+            siblingData,
+            value: siblingData[field.name],
+          })
+          if (validationResult?.invalidBlockSlugs?.length) {
+            filterOptionsError = true
+            let rowIndex = -1
+            for (const block of siblingData[field.name] as JsonObject[]) {
+              rowIndex++
+              if (validationResult.invalidBlockSlugs.includes(block.blockType as string)) {
+                const blockConfigOrSlug = field.blocks.find((blockFromField) =>
+                  typeof blockFromField === 'string'
+                    ? blockFromField === block.blockType
+                    : blockFromField.slug === block.blockType,
+                )
+                const blockConfig =
+                  typeof blockConfigOrSlug === 'string'
+                    ? req.payload.blocks[blockConfigOrSlug]
+                    : blockConfigOrSlug
+
+                const blockLabelPath =
+                  field?.label === false
+                    ? fieldLabelPath
+                    : buildFieldLabel(
+                        fieldLabelPath,
+                        `${getTranslatedLabel(field?.label || field?.name, req.i18n)} > ${req.t('fields:block')} ${rowIndex + 1} (${getTranslatedLabel(blockConfig?.labels?.singular || block.blockType, req.i18n)})`,
+                      )
+
+                errors.push({
+                  label: blockLabelPath,
+                  message: req.t('validation:invalidBlock', { block: block.blockType }),
+                  path: `${path}.${rowIndex}.id`,
+                })
+              }
+            }
+          }
+        }
+
+        if (!filterOptionsError) {
+          // If the error is due to block filterOptions, we want to push the errors for each individual block, not the blocks
+          // field itself => only push the error if the field is not a block field with validation failure due to filterOptions
+          const fieldLabel = buildFieldLabel(
+            fieldLabelPath,
+            getTranslatedLabel(field?.label || field?.name, req.i18n),
+          )
+
+          errors.push({
+            label: failedLocale ? `${fieldLabel} (${failedLocale})` : fieldLabel,
+            message: validationResult,
+            path,
+          })
+        }
+      }
+    }
+
+    // Push merge locale action if applicable
+    if (localization && fieldShouldBeLocalized({ field, parentIsLocalized })) {
+      mergeLocaleActions.push(() => {
+        const localeData: Record<string, unknown> = {}
+
+        // With `locale: 'all'`, siblingData holds a locale-keyed object (`{ en, es }`) rather than a single
+        // locale's value - take each submitted locale, falling back to the existing doc for ones not sent.
+        const submittedValue = siblingData[field.name!]
+        const isAllLocales =
+          req.locale === 'all' &&
+          submittedValue !== null &&
+          typeof submittedValue === 'object' &&
+          !Array.isArray(submittedValue)
+
+        for (const locale of localization.localeCodes) {
+          const existingValue = siblingDocWithLocales?.[field.name!]?.[locale]
+
+          const fieldValue = isAllLocales
+            ? locale in (submittedValue as Record<string, unknown>)
+              ? (submittedValue as Record<string, unknown>)[locale]
+              : existingValue
+            : locale === req.locale
+              ? submittedValue
+              : existingValue
+
+          // update locale value if it's not undefined
+          if (typeof fieldValue !== 'undefined') {
+            localeData[locale] = fieldValue
+          }
+        }
+
+        // If there are locales with data, set the data
+        if (Object.keys(localeData).length > 0) {
+          siblingData[field.name!] = localeData
+        }
+      })
+    }
+  }
+
+  switch (field.type) {
+    case 'array': {
+      const rows = siblingData[field.name]
+
+      if (Array.isArray(rows)) {
+        const promises: Promise<void>[] = []
+
+        rows.forEach((row, rowIndex) => {
+          promises.push(
+            traverseFields({
+              id,
+              blockData,
+              blockFields,
+              collection,
+              context,
+              data,
+              doc,
+              docWithLocales,
+              errors,
+              fieldLabelPath:
+                field?.label === false
+                  ? fieldLabelPath
+                  : buildFieldLabel(
+                      fieldLabelPath,
+                      `${getTranslatedLabel(field?.label || field?.name, req.i18n)} ${rowIndex + 1}`,
+                    ),
+              fields: field.fields,
+              global,
+              isValidationOperation,
+              mergeLocaleActions,
+              operation,
+              overrideAccess,
+              parentIndexPath: '',
+              parentIsLocalized: parentIsLocalized || field.localized,
+              parentPath: path + '.' + rowIndex,
+              parentSchemaPath: schemaPath,
+              req,
+              siblingData: row as JsonObject,
+              siblingDoc: getExistingRowDoc(row as JsonObject, siblingDoc[field.name]),
+              siblingDocWithLocales: getExistingRowDoc(
+                row as JsonObject,
+                siblingDocWithLocales?.[field.name],
+              ),
+              skipHooks,
+              skipValidation: skipValidationFromHere,
+              submittedTopLevelFieldNames,
+            }),
+          )
+        })
+
+        await Promise.all(promises)
+      }
+
+      break
+    }
+
+    case 'blocks': {
+      const rows = siblingData[field.name]
+      if (Array.isArray(rows)) {
+        const promises: Promise<void>[] = []
+
+        rows.forEach((row, rowIndex) => {
+          const rowSiblingDoc = getExistingRowDoc(row as JsonObject, siblingDoc[field.name])
+
+          const rowSiblingDocWithLocales = getExistingRowDoc(
+            row as JsonObject,
+            siblingDocWithLocales ? siblingDocWithLocales[field.name] : {},
+          )
+
+          const blockTypeToMatch = (row as JsonObject).blockType || rowSiblingDoc.blockType
+
+          const fieldBlock = field.blocks.find((fieldBlock) =>
+            typeof fieldBlock === 'string'
+              ? fieldBlock === blockTypeToMatch
+              : fieldBlock.slug === blockTypeToMatch,
+          )
+
+          if (!fieldBlock) {
+            errors.push({
+              message: req.t('validation:invalidBlock', { block: blockTypeToMatch }),
+              path: `${path}.${rowIndex}.blockType`,
+            })
+            return
+          }
+
+          const block: Block | undefined =
+            typeof fieldBlock === 'string' ? req.payload.blocks[fieldBlock] : fieldBlock
+
+          const blockLabelPath =
+            field?.label === false
+              ? fieldLabelPath
+              : buildFieldLabel(
+                  fieldLabelPath,
+                  `${getTranslatedLabel(field?.label || field?.name, req.i18n)} > ${req.t('fields:block')} ${rowIndex + 1} (${getTranslatedLabel(block?.labels?.singular || blockTypeToMatch, req.i18n)})`,
+                )
+
+          if (block) {
+            promises.push(
+              traverseFields({
+                id,
+                blockData: row,
+                blockFields: block.fields,
+                collection,
+                context,
+                data,
+                doc,
+                docWithLocales,
+                errors,
+                fieldLabelPath: blockLabelPath,
+
+                fields: block.fields,
+                global,
+                isValidationOperation,
+                mergeLocaleActions,
+                operation,
+                overrideAccess,
+                parentIndexPath: '',
+                parentIsLocalized: parentIsLocalized || field.localized,
+                parentPath: path + '.' + rowIndex,
+                parentSchemaPath: schemaPath + '.' + block.slug,
+                req,
+                siblingData: row as JsonObject,
+                siblingDoc: rowSiblingDoc,
+                siblingDocWithLocales: rowSiblingDocWithLocales,
+                skipHooks,
+                skipValidation: skipValidationFromHere,
+                submittedTopLevelFieldNames,
+              }),
+            )
+          }
+        })
+
+        await Promise.all(promises)
+      }
+
+      break
+    }
+
+    case 'collapsible':
+    case 'row': {
+      await traverseFields({
+        id,
+        blockData,
+        blockFields,
+        collection,
+        context,
+        data,
+        doc,
+        docWithLocales,
+        errors,
+        fieldLabelPath:
+          field.type === 'row' || field?.label === false
+            ? fieldLabelPath
+            : buildFieldLabel(
+                fieldLabelPath,
+                getTranslatedLabel(field?.label || field?.type, req.i18n),
+              ),
+        fields: field.fields,
+        global,
+        isValidationOperation,
+        mergeLocaleActions,
+        operation,
+        overrideAccess,
+        parentIndexPath: indexPath,
+        parentIsLocalized,
+        parentPath,
+        parentSchemaPath: schemaPath,
+        req,
+        siblingData,
+        siblingDoc,
+        siblingDocWithLocales: siblingDocWithLocales!,
+        skipHooks,
+        skipValidation: skipValidationFromHere,
+        submittedTopLevelFieldNames,
+      })
+
+      break
+    }
+
+    case 'group': {
+      let groupSiblingData = siblingData
+      let groupSiblingDoc = siblingDoc
+      let groupSiblingDocWithLocales = siblingDocWithLocales
+
+      const isNamedGroup = fieldAffectsData(field)
+
+      if (isNamedGroup) {
+        if (typeof siblingData[field.name] !== 'object') {
+          siblingData[field.name] = {}
+        }
+
+        if (typeof siblingDoc[field.name] !== 'object') {
+          siblingDoc[field.name] = {}
+        }
+
+        if (typeof siblingDocWithLocales![field.name] !== 'object') {
+          siblingDocWithLocales![field.name] = {}
+        }
+        if (typeof siblingData[field.name] !== 'object') {
+          siblingData[field.name] = {}
+        }
+
+        if (typeof siblingDoc[field.name] !== 'object') {
+          siblingDoc[field.name] = {}
+        }
+
+        if (typeof siblingDocWithLocales![field.name] !== 'object') {
+          siblingDocWithLocales![field.name] = {}
+        }
+
+        groupSiblingData = siblingData[field.name] as JsonObject
+        groupSiblingDoc = siblingDoc[field.name] as JsonObject
+        groupSiblingDocWithLocales = siblingDocWithLocales![field.name] as JsonObject
+      }
+
+      const fallbackLabel = field?.label || (isNamedGroup ? field.name : field?.type)
+
+      await traverseFields({
+        id,
+        blockData,
+        blockFields,
+        collection,
+        context,
+        data,
+        doc,
+        docWithLocales,
+        errors,
+        fieldLabelPath:
+          field?.label === false
+            ? fieldLabelPath
+            : buildFieldLabel(fieldLabelPath, getTranslatedLabel(fallbackLabel, req.i18n)),
+        fields: field.fields,
+        global,
+        isValidationOperation,
+        mergeLocaleActions,
+        operation,
+        overrideAccess,
+        parentIndexPath: isNamedGroup ? '' : indexPath,
+        parentIsLocalized: parentIsLocalized || field.localized,
+        parentPath: isNamedGroup ? path : parentPath,
+        parentSchemaPath: schemaPath,
+        req,
+        siblingData: groupSiblingData,
+        siblingDoc: groupSiblingDoc,
+        siblingDocWithLocales: groupSiblingDocWithLocales!,
+        skipHooks,
+        skipValidation: skipValidationFromHere,
+        submittedTopLevelFieldNames,
+      })
+
+      break
+    }
+
+    case 'point': {
+      // Transform point data for storage
+      if (
+        Array.isArray(siblingData[field.name]) &&
+        siblingData[field.name][0] !== null &&
+        siblingData[field.name][1] !== null
+      ) {
+        siblingData[field.name] = {
+          type: 'Point',
+          coordinates: [
+            parseFloat(siblingData[field.name][0]),
+            parseFloat(siblingData[field.name][1]),
+          ],
+        }
+      }
+
+      break
+    }
+
+    case 'richText': {
+      if (!field?.editor) {
+        throw new MissingEditorProp(field) // while we allow disabling editor functionality, you should not have any richText fields defined if you do not have an editor
+      }
+
+      if (typeof field?.editor === 'function') {
+        throw new Error('Attempted to access unsanitized rich text editor.')
+      }
+
+      const editor: RichTextAdapter = field?.editor
+
+      if (!skipHooks && editor?.hooks?.beforeChange?.length) {
+        for (const hook of editor.hooks.beforeChange) {
+          const hookedValue = await hook({
+            collection,
+            context,
+            data,
+            docWithLocales,
+            errors,
+            field,
+            fieldLabelPath:
+              field?.label === false
+                ? fieldLabelPath
+                : buildFieldLabel(
+                    fieldLabelPath,
+                    getTranslatedLabel(field?.label || field?.name, req.i18n),
+                  ),
+            global,
+            indexPath: indexPathSegments,
+            mergeLocaleActions,
+            operation,
+            originalDoc: doc,
+            overrideAccess,
+            parentIsLocalized,
+            path: pathSegments,
+            previousSiblingDoc: siblingDoc,
+            previousValue: siblingDoc[field.name],
+            req,
+            schemaPath: schemaPathSegments,
+            siblingData,
+            siblingDocWithLocales,
+            skipValidation: skipValidationFromHere,
+            value: siblingData[field.name],
+          })
+
+          if (hookedValue !== undefined) {
+            siblingData[field.name] = hookedValue
+          }
+        }
+      }
+
+      break
+    }
+
+    case 'tab': {
+      let tabSiblingData = siblingData
+      let tabSiblingDoc = siblingDoc
+      let tabSiblingDocWithLocales = siblingDocWithLocales
+
+      const isNamedTab = tabHasName(field)
+
+      if (isNamedTab) {
+        if (typeof siblingData[field.name] !== 'object') {
+          siblingData[field.name] = {}
+        }
+
+        if (typeof siblingDoc[field.name] !== 'object') {
+          siblingDoc[field.name] = {}
+        }
+
+        if (typeof siblingDocWithLocales![field.name] !== 'object') {
+          siblingDocWithLocales![field.name] = {}
+        }
+
+        tabSiblingData = siblingData[field.name] as JsonObject
+        tabSiblingDoc = siblingDoc[field.name] as JsonObject
+        tabSiblingDocWithLocales = siblingDocWithLocales![field.name] as JsonObject
+      }
+
+      await traverseFields({
+        id,
+        blockData,
+        blockFields,
+        collection,
+        context,
+        data,
+        doc,
+        docWithLocales,
+        errors,
+        fieldLabelPath:
+          field?.label === false
+            ? fieldLabelPath
+            : buildFieldLabel(
+                fieldLabelPath,
+                getTranslatedLabel(field?.label || field.name, req.i18n),
+              ),
+        fields: field.fields,
+        global,
+        isValidationOperation,
+        mergeLocaleActions,
+        operation,
+        overrideAccess,
+        parentIndexPath: isNamedTab ? '' : indexPath,
+        parentIsLocalized: parentIsLocalized || field.localized,
+        parentPath: isNamedTab ? path : parentPath,
+        parentSchemaPath: schemaPath,
+        req,
+        siblingData: tabSiblingData,
+        siblingDoc: tabSiblingDoc,
+        siblingDocWithLocales: tabSiblingDocWithLocales!,
+        skipHooks,
+        skipValidation: skipValidationFromHere,
+        submittedTopLevelFieldNames,
+      })
+
+      break
+    }
+
+    case 'tabs': {
+      await traverseFields({
+        id,
+        blockData,
+        blockFields,
+        collection,
+        context,
+        data,
+        doc,
+        docWithLocales,
+        errors,
+        fieldLabelPath:
+          field?.label === false
+            ? fieldLabelPath
+            : buildFieldLabel(fieldLabelPath, getTranslatedLabel(field?.label || '', req.i18n)),
+        fields: field.tabs.map((tab) => ({ ...tab, type: 'tab' })),
+        global,
+        isValidationOperation,
+        mergeLocaleActions,
+        operation,
+        overrideAccess,
+        parentIndexPath: indexPath,
+        parentIsLocalized,
+        parentPath: path,
+        parentSchemaPath: schemaPath,
+        req,
+        siblingData,
+        siblingDoc,
+        siblingDocWithLocales: siblingDocWithLocales!,
+        skipHooks,
+        skipValidation: skipValidationFromHere,
+        submittedTopLevelFieldNames,
+      })
+
+      break
+    }
+
+    default: {
+      break
+    }
+  }
+}
+
+function hasInvalidFieldValueShape({
+  field,
+  value,
+}: {
+  field: Field | TabAsField
+  value: unknown
+}): boolean {
+  if (value === null || typeof value === 'undefined' || !fieldAffectsData(field)) {
+    return false
+  }
+
+  if (field.type === 'array' || field.type === 'blocks') {
+    // Form state may use a numeric row count, while submitted values use arrays.
+    return !(Array.isArray(value) || typeof value === 'number')
+  }
+
+  if (field.type === 'number') {
+    // Only hasMany number fields may receive arrays.
+    return typeof value === 'object' && !(field.hasMany && Array.isArray(value))
+  }
+
+  if ((field.type === 'relationship' || field.type === 'upload') && field.hasMany) {
+    // HasMany relationships/uploads may receive arrays or one valid polymorphic value.
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return false
+    }
+
+    const relationshipValue = value as Record<PropertyKey, unknown>
+    const valuePrototype = Object.getPrototypeOf(value)
+    const isSinglePolymorphicRelationshipValue =
+      Array.isArray(field.relationTo) &&
+      (valuePrototype === null || valuePrototype === Object.prototype) &&
+      Object.hasOwn(relationshipValue, 'relationTo') &&
+      Object.hasOwn(relationshipValue, 'value') &&
+      Reflect.ownKeys(relationshipValue).length === 2 &&
+      typeof relationshipValue.relationTo === 'string' &&
+      field.relationTo.includes(relationshipValue.relationTo) &&
+      (typeof relationshipValue.value === 'string' || typeof relationshipValue.value === 'number')
+
+    return !isSinglePolymorphicRelationshipValue
+  }
+
+  return false
+}

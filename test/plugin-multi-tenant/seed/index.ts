@@ -1,0 +1,379 @@
+import type { Payload } from 'payload'
+
+import { credentials } from '../credentials.js'
+import { foldersSlug, menuItemsSlug, menuSlug, tenantsSlug, usersSlug } from '../shared.js'
+
+export const seed = async (payload: Payload) => {
+  // create tenants
+  const blueDogTenant = await payload.create({
+    collection: tenantsSlug,
+    data: {
+      name: 'Blue Dog',
+      domain: 'bluedog.com',
+    },
+    overrideAccess: true,
+  })
+  const steelCatTenant = await payload.create({
+    collection: tenantsSlug,
+    data: {
+      name: 'Steel Cat',
+      domain: 'steelcat.com',
+    },
+    overrideAccess: true,
+  })
+  const anchorBarTenant = await payload.create({
+    collection: tenantsSlug,
+    data: {
+      name: 'Anchor Bar',
+      domain: 'anchorbar.com',
+      selectedLocales: ['en'],
+    },
+    overrideAccess: true,
+  })
+  const publicTenant = await payload.create({
+    collection: tenantsSlug,
+    data: {
+      name: 'Public Tenant',
+      domain: 'public.com',
+      isPublic: true,
+    },
+    overrideAccess: true,
+  })
+
+  // Create folders for Blue Dog
+  const blueDogDocumentsFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Blue Dog Documents',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  const blueDogArchivesFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Blue Dog Archives',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  const blueDogRecipesFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Blue Dog Recipes',
+      folder: blueDogDocumentsFolder.id, // parentFieldName is 'folder' in config
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // Create folders for Steel Cat
+  const steelCatDocumentsFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Steel Cat Documents',
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+  const steelCatArchivesFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Steel Cat Archives',
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // Create folders for Anchor Bar
+  const anchorBarFilesFolder = await payload.create({
+    collection: foldersSlug,
+    data: {
+      name: 'Anchor Bar Files',
+      tenant: anchorBarTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // Create blue dog menu items (some in folders, some at root)
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Chorizo Con Queso and Chips',
+      folder: blueDogRecipesFolder.id,
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Garlic Parmesan Tots',
+      folder: blueDogRecipesFolder.id,
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Spicy Mac',
+      folder: blueDogDocumentsFolder.id,
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  // Menu items at root (no folder)
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Veggie Wrap',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'House Salad',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Draft Beer',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: 'relationships',
+    data: {
+      title: 'Owned by blue dog',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: 'relationships',
+    data: {
+      title: 'Owned by steelcat',
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: 'relationships',
+    data: {
+      title: 'Owned by bar with no ac',
+      tenant: anchorBarTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: 'relationships',
+    data: {
+      title: 'Owned by public tenant',
+      tenant: publicTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // Create steel cat menu items (in folders)
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Pretzel Bites',
+      folder: steelCatDocumentsFolder.id,
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Buffalo Chicken Dip',
+      folder: steelCatDocumentsFolder.id,
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Pulled Pork Nachos',
+      folder: steelCatArchivesFolder.id,
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // Create anchor bar menu items (in folders)
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Peanuts',
+      folder: anchorBarFilesFolder.id,
+      tenant: anchorBarTenant.id,
+      localizedName: 'Peanuts EN',
+    },
+    locale: 'en',
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Pretzels',
+      folder: anchorBarFilesFolder.id,
+      tenant: anchorBarTenant.id,
+      localizedName: 'Pretzels EN',
+    },
+    locale: 'en',
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Popcorn',
+      folder: anchorBarFilesFolder.id,
+      tenant: anchorBarTenant.id,
+      localizedName: 'Popcorn EN',
+    },
+    locale: 'en',
+    overrideAccess: true,
+  })
+
+  // Public tenant menu items
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Free Pizza',
+      tenant: publicTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuItemsSlug,
+    data: {
+      name: 'Free Dogs',
+      tenant: publicTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  // create users
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.admin,
+      roles: ['admin'],
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.blueDog,
+      roles: ['user'],
+      tenants: [
+        {
+          tenant: blueDogTenant.id,
+        },
+      ],
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.owner,
+      roles: ['user'],
+      tenants: [
+        {
+          tenant: anchorBarTenant.id,
+        },
+        {
+          tenant: blueDogTenant.id,
+        },
+      ],
+    },
+    overrideAccess: true,
+  })
+
+  // create menus
+  await payload.create({
+    collection: menuSlug,
+    data: {
+      description: 'This collection behaves like globals, 1 document per tenant. No list view.',
+      title: 'Blue Dog Menu',
+      tenant: blueDogTenant.id,
+    },
+    overrideAccess: true,
+  })
+  await payload.create({
+    collection: menuSlug,
+    data: {
+      description: 'This collection behaves like globals, 1 document per tenant. No list view.',
+      title: 'Steel Cat Menu',
+      tenant: steelCatTenant.id,
+    },
+    overrideAccess: true,
+  })
+
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.steelCat,
+      roles: ['user'],
+      tenants: [
+        {
+          tenant: steelCatTenant.id,
+        },
+      ],
+    },
+    overrideAccess: true,
+  })
+
+  // User with mixed tenant roles: admin for Steel Cat, member for Blue Dog
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.memberUser,
+      roles: ['user'],
+      tenants: [
+        {
+          tenant: steelCatTenant.id,
+          tenantRole: 'admin', // Has admin role - should see Steel Cat
+        },
+        {
+          tenant: anchorBarTenant.id,
+          tenantRole: 'admin',
+        },
+        {
+          tenant: blueDogTenant.id,
+          tenantRole: 'member', // Only member role - should NOT see Blue Dog
+        },
+      ],
+    },
+    overrideAccess: true,
+  })
+
+  // Create a user with no tenant associations
+  await payload.create({
+    collection: usersSlug,
+    data: {
+      ...credentials.noTenant,
+      roles: ['user'],
+      // tenants: [],
+    },
+    overrideAccess: true,
+  })
+}

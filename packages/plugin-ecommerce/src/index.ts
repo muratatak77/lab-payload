@@ -1,0 +1,400 @@
+import type { AcceptedLanguages } from '@payloadcms/translations'
+import type { Endpoint } from 'payload'
+
+import { definePlugin } from 'payload'
+
+import type { PluginDefaultTranslationsObject } from './translations/types.js'
+import type { EcommercePluginConfig, SanitizedEcommercePluginConfig } from './types/index.js'
+
+import { createAddressesCollection } from './collections/addresses/createAddressesCollection.js'
+import { createCartsCollection } from './collections/carts/createCartsCollection.js'
+import { createOrdersCollection } from './collections/orders/createOrdersCollection.js'
+import { createProductsCollection } from './collections/products/createProductsCollection.js'
+import { createTransactionsCollection } from './collections/transactions/createTransactionsCollection.js'
+import { createVariantOptionsCollection } from './collections/variants/createVariantOptionsCollection.js'
+import { createVariantsCollection } from './collections/variants/createVariantsCollection/index.js'
+import { createVariantTypesCollection } from './collections/variants/createVariantTypesCollection.js'
+import { confirmOrderHandler } from './endpoints/confirmOrder.js'
+import { initiatePaymentHandler } from './endpoints/initiatePayment.js'
+import { translations } from './translations/index.js'
+import { getCollectionSlugMap } from './utilities/getCollectionSlugMap.js'
+import { pushTypeScriptProperties } from './utilities/pushTypeScriptProperties.js'
+import { sanitizePluginConfig } from './utilities/sanitizePluginConfig.js'
+
+export const ecommercePlugin = definePlugin<EcommercePluginConfig | undefined>({
+  slug: '@payloadcms/plugin-ecommerce',
+  plugin: async ({ config: incomingConfig, options: pluginConfig }) => {
+    if (!pluginConfig) {
+      return incomingConfig
+    }
+
+    const sanitizedPluginConfig = sanitizePluginConfig({ pluginConfig })
+
+    const accessConfig = sanitizedPluginConfig.access
+
+    // Ensure collections exists
+    if (!incomingConfig.collections) {
+      incomingConfig.collections = []
+    }
+
+    // Determine if variants are enabled based on products config
+    const productsConfig =
+      typeof sanitizedPluginConfig.products === 'boolean'
+        ? sanitizedPluginConfig.products
+          ? { variants: true }
+          : undefined
+        : sanitizedPluginConfig.products
+
+    const enableVariants = Boolean(productsConfig?.variants)
+
+    /**
+     * Used to keep track of the slugs of collections in case they are overridden by the user.
+     * Variant-related slugs are only included when variants are enabled.
+     */
+    const collectionSlugMap = getCollectionSlugMap({ enableVariants, sanitizedPluginConfig })
+
+    const currenciesConfig: Required<SanitizedEcommercePluginConfig['currencies']> =
+      sanitizedPluginConfig.currencies
+
+    let addressFields
+
+    if (sanitizedPluginConfig.addresses) {
+      addressFields = sanitizedPluginConfig.addresses.addressFields
+
+      const supportedCountries = sanitizedPluginConfig.addresses.supportedCountries
+
+      const defaultAddressesCollection = createAddressesCollection({
+        access: accessConfig,
+        addressFields,
+        customersSlug: collectionSlugMap.customers,
+        supportedCountries,
+      })
+
+      const addressesCollection =
+        sanitizedPluginConfig.addresses &&
+        typeof sanitizedPluginConfig.addresses === 'object' &&
+        'addressesCollectionOverride' in sanitizedPluginConfig.addresses &&
+        sanitizedPluginConfig.addresses.addressesCollectionOverride
+          ? await sanitizedPluginConfig.addresses.addressesCollectionOverride({
+              defaultCollection: defaultAddressesCollection,
+            })
+          : defaultAddressesCollection
+
+      incomingConfig.collections.push(addressesCollection)
+    }
+
+    if (productsConfig) {
+      if (productsConfig.variants) {
+        const variantsConfig =
+          typeof productsConfig.variants === 'boolean' ? undefined : productsConfig.variants
+
+        const defaultVariantsCollection = createVariantsCollection({
+          access: accessConfig,
+          currenciesConfig,
+          inventory: sanitizedPluginConfig.inventory,
+          productsSlug: collectionSlugMap.products,
+          variantOptionsSlug: collectionSlugMap.variantOptions ?? 'variantOptions',
+          variantTypesSlug: collectionSlugMap.variantTypes ?? 'variantTypes',
+        })
+
+        const variants =
+          variantsConfig &&
+          typeof variantsConfig === 'object' &&
+          'variantsCollectionOverride' in variantsConfig &&
+          variantsConfig.variantsCollectionOverride
+            ? await variantsConfig.variantsCollectionOverride({
+                defaultCollection: defaultVariantsCollection,
+              })
+            : defaultVariantsCollection
+
+        const defaultVariantTypesCollection = createVariantTypesCollection({
+          access: accessConfig,
+          variantOptionsSlug: collectionSlugMap.variantOptions ?? 'variantOptions',
+        })
+
+        const variantTypes =
+          variantsConfig &&
+          typeof variantsConfig === 'object' &&
+          'variantTypesCollectionOverride' in variantsConfig &&
+          variantsConfig.variantTypesCollectionOverride
+            ? await variantsConfig.variantTypesCollectionOverride({
+                defaultCollection: defaultVariantTypesCollection,
+              })
+            : defaultVariantTypesCollection
+
+        const defaultVariantOptionsCollection = createVariantOptionsCollection({
+          access: accessConfig,
+          variantTypesSlug: collectionSlugMap.variantTypes ?? 'variantTypes',
+        })
+
+        const variantOptions =
+          variantsConfig &&
+          typeof variantsConfig === 'object' &&
+          'variantOptionsCollectionOverride' in variantsConfig &&
+          variantsConfig.variantOptionsCollectionOverride
+            ? await variantsConfig.variantOptionsCollectionOverride({
+                defaultCollection: defaultVariantOptionsCollection,
+              })
+            : defaultVariantOptionsCollection
+
+        incomingConfig.collections.push(variants, variantTypes, variantOptions)
+      }
+
+      const defaultProductsCollection = createProductsCollection({
+        access: accessConfig,
+        currenciesConfig,
+        enableVariants,
+        inventory: sanitizedPluginConfig.inventory,
+        variantsSlug: collectionSlugMap.variants ?? 'variants',
+        variantTypesSlug: collectionSlugMap.variantTypes ?? 'variantTypes',
+      })
+
+      const productsCollection =
+        productsConfig &&
+        'productsCollectionOverride' in productsConfig &&
+        productsConfig.productsCollectionOverride
+          ? await productsConfig.productsCollectionOverride({
+              defaultCollection: defaultProductsCollection,
+            })
+          : defaultProductsCollection
+
+      incomingConfig.collections.push(productsCollection)
+
+      if (sanitizedPluginConfig.carts) {
+        const cartsConfig =
+          typeof sanitizedPluginConfig.carts === 'object' ? sanitizedPluginConfig.carts : {}
+
+        const defaultCartsCollection = createCartsCollection({
+          access: accessConfig,
+          allowGuestCarts: cartsConfig.allowGuestCarts,
+          cartItemMatcher: cartsConfig.cartItemMatcher,
+          currenciesConfig,
+          customersSlug: collectionSlugMap.customers,
+          enableVariants: Boolean(productsConfig.variants),
+          productsSlug: collectionSlugMap.products,
+          variantsSlug: collectionSlugMap.variants ?? 'variants',
+        })
+
+        const cartsCollection =
+          sanitizedPluginConfig.carts &&
+          typeof sanitizedPluginConfig.carts === 'object' &&
+          'cartsCollectionOverride' in sanitizedPluginConfig.carts &&
+          sanitizedPluginConfig.carts.cartsCollectionOverride
+            ? await sanitizedPluginConfig.carts.cartsCollectionOverride({
+                defaultCollection: defaultCartsCollection,
+              })
+            : defaultCartsCollection
+
+        incomingConfig.collections.push(cartsCollection)
+      }
+    }
+
+    if (sanitizedPluginConfig.orders) {
+      const defaultOrdersCollection = createOrdersCollection({
+        access: accessConfig,
+        addressFields,
+        currenciesConfig,
+        customersSlug: collectionSlugMap.customers,
+        enableVariants,
+        productsSlug: collectionSlugMap.products,
+        transactionsSlug: collectionSlugMap.transactions,
+        variantsSlug: collectionSlugMap.variants ?? 'variants',
+      })
+
+      const ordersCollection =
+        sanitizedPluginConfig.orders &&
+        typeof sanitizedPluginConfig.orders === 'object' &&
+        'ordersCollectionOverride' in sanitizedPluginConfig.orders &&
+        sanitizedPluginConfig.orders.ordersCollectionOverride
+          ? await sanitizedPluginConfig.orders.ordersCollectionOverride({
+              defaultCollection: defaultOrdersCollection,
+            })
+          : defaultOrdersCollection
+
+      incomingConfig.collections.push(ordersCollection)
+    }
+
+    const paymentMethods = sanitizedPluginConfig.payments.paymentMethods
+
+    if (sanitizedPluginConfig.payments) {
+      if (paymentMethods.length) {
+        if (!Array.isArray(incomingConfig.endpoints)) {
+          incomingConfig.endpoints = []
+        }
+
+        const productsValidation =
+          (typeof sanitizedPluginConfig.products === 'object' &&
+            sanitizedPluginConfig.products.validation) ||
+          undefined
+
+        paymentMethods.forEach((paymentMethod) => {
+          const methodPath = `/payments/${paymentMethod.name}`
+          const endpoints: Endpoint[] = []
+
+          const initiatePayment: Endpoint = {
+            handler: initiatePaymentHandler({
+              currenciesConfig,
+              inventory: sanitizedPluginConfig.inventory,
+              paymentMethod,
+              productsSlug: collectionSlugMap.products,
+              productsValidation,
+              transactionsSlug: collectionSlugMap.transactions,
+              variantsSlug: collectionSlugMap.variants ?? 'variants',
+            }),
+            method: 'post',
+            path: `${methodPath}/initiate`,
+          }
+
+          const confirmOrder: Endpoint = {
+            handler: confirmOrderHandler({
+              cartsSlug: collectionSlugMap.carts,
+              currenciesConfig,
+              ordersSlug: collectionSlugMap.orders,
+              paymentMethod,
+              productsSlug: collectionSlugMap.products,
+              productsValidation,
+              transactionsSlug: collectionSlugMap.transactions,
+              variantsSlug: collectionSlugMap.variants ?? 'variants',
+            }),
+            method: 'post',
+            path: `${methodPath}/confirm-order`,
+          }
+
+          endpoints.push(initiatePayment, confirmOrder)
+
+          // Attach any additional endpoints defined in the payment method
+          if (paymentMethod.endpoints && paymentMethod.endpoints.length > 0) {
+            const methodEndpoints = paymentMethod.endpoints.map((endpoint) => {
+              const path = endpoint.path.startsWith('/') ? endpoint.path : `/${endpoint.path}`
+
+              return {
+                ...endpoint,
+                path: `${methodPath}${path}`,
+              }
+            })
+
+            endpoints.push(...methodEndpoints)
+          }
+
+          incomingConfig.endpoints!.push(...endpoints)
+        })
+      }
+    }
+
+    if (sanitizedPluginConfig.transactions) {
+      const defaultTransactionsCollection = createTransactionsCollection({
+        access: accessConfig,
+        addressFields,
+        cartsSlug: collectionSlugMap.carts,
+        currenciesConfig,
+        customersSlug: collectionSlugMap.customers,
+        enableVariants,
+        ordersSlug: collectionSlugMap.orders,
+        paymentMethods,
+        productsSlug: collectionSlugMap.products,
+        variantsSlug: collectionSlugMap.variants ?? 'variants',
+      })
+
+      const transactionsCollection =
+        sanitizedPluginConfig.transactions &&
+        typeof sanitizedPluginConfig.transactions === 'object' &&
+        'transactionsCollectionOverride' in sanitizedPluginConfig.transactions &&
+        sanitizedPluginConfig.transactions.transactionsCollectionOverride
+          ? await sanitizedPluginConfig.transactions.transactionsCollectionOverride({
+              defaultCollection: defaultTransactionsCollection,
+            })
+          : defaultTransactionsCollection
+
+      incomingConfig.collections.push(transactionsCollection)
+    }
+
+    if (!incomingConfig.i18n) {
+      incomingConfig.i18n = {}
+    }
+
+    if (!incomingConfig.i18n.translations) {
+      incomingConfig.i18n.translations = {}
+    }
+
+    /**
+     * Merge plugin translations — only for languages the user has enabled.
+     * Plugins run before sanitize, so `supportedLanguages` may be undefined; sanitize will
+     * default it to `{ en }`, so we mirror that here. Plugin-ecommerce translations always
+     * win over user-provided ones for the `plugin-ecommerce` namespace.
+     */
+    const supportedLanguageKeys = incomingConfig.i18n?.supportedLanguages
+      ? Object.keys(incomingConfig.i18n.supportedLanguages)
+      : ['en']
+
+    for (const lang of supportedLanguageKeys) {
+      const pluginEntry = translations[lang as keyof typeof translations]
+      if (!pluginEntry) {
+        continue
+      }
+      const typedLocale = lang as AcceptedLanguages
+      const existing = (incomingConfig.i18n.translations[typedLocale] ?? {}) as Record<
+        string,
+        unknown
+      >
+      incomingConfig.i18n.translations[typedLocale] = {
+        ...existing,
+        'plugin-ecommerce': pluginEntry.translations['plugin-ecommerce'],
+      }
+    }
+
+    if (!incomingConfig.typescript) {
+      incomingConfig.typescript = {}
+    }
+
+    if (!incomingConfig.typescript.schema) {
+      incomingConfig.typescript.schema = []
+    }
+
+    incomingConfig.typescript.schema.push((args) =>
+      pushTypeScriptProperties({
+        ...args,
+        collectionSlugMap,
+        sanitizedPluginConfig,
+      }),
+    )
+
+    return incomingConfig
+  },
+})
+
+export {
+  createAddressesCollection,
+  createCartsCollection,
+  createOrdersCollection,
+  createProductsCollection,
+  createTransactionsCollection,
+  createVariantOptionsCollection,
+  createVariantsCollection,
+  createVariantTypesCollection,
+}
+
+export { addItem } from './collections/carts/operations/addItem.js'
+export { clearCart } from './collections/carts/operations/clearCart.js'
+export { defaultCartItemMatcher } from './collections/carts/operations/defaultCartItemMatcher.js'
+export { removeItem } from './collections/carts/operations/removeItem.js'
+export { isNumericOperator } from './collections/carts/operations/types.js'
+export type {
+  AddItemArgs,
+  CartItemData,
+  CartItemMatcher,
+  CartItemMatcherArgs,
+  CartOperationResult,
+  ClearCartArgs,
+  FieldWithOperator,
+  NewCartItem,
+  NumericOperator,
+  RemoveItemArgs,
+  UpdateItemArgs,
+} from './collections/carts/operations/types.js'
+export { updateItem } from './collections/carts/operations/updateItem.js'
+export { EUR, GBP, USD } from './currencies/index.js'
+export { amountField } from './fields/amountField.js'
+export { currencyField } from './fields/currencyField.js'
+export { pricesField } from './fields/pricesField.js'
+export { statusField } from './fields/statusField.js'
+export { variantsFields } from './fields/variantsFields.js'

@@ -1,0 +1,1041 @@
+import type { SelectField, ValidateOptions } from './config/types.js'
+
+import {
+  blocks,
+  email,
+  json,
+  number,
+  password,
+  point,
+  relationship,
+  select,
+  text,
+  textarea,
+  type BlocksFieldValidation,
+  type JSONFieldValidation,
+  type PointFieldValidation,
+  type SelectFieldValidation,
+} from './validations.js'
+import { describe, expect, it, vitest } from 'vitest'
+
+const t = vitest.fn((string) => string)
+
+let options: ValidateOptions<any, any, any, any> = {
+  data: undefined,
+  operation: 'create',
+  req: {
+    context: {},
+    payload: {
+      config: {
+        db: {
+          defaultIDType: 'text',
+          init: () => null,
+        },
+      },
+    },
+    t,
+  },
+  siblingData: undefined,
+}
+
+describe('Field Validations', () => {
+  describe('email', () => {
+    it.each(['', null, undefined])('should require an empty email value of %s', (value) => {
+      expect(email(value, { ...options, required: true })).toBe('validation:required')
+    })
+
+    it.each(['', null, undefined])('should allow an optional empty email value of %s', (value) => {
+      expect(email(value, { ...options, required: false })).toBe(true)
+    })
+
+    it.each([false, true])('should reject a malformed email when required is %s', (required) => {
+      expect(email('invalid-address', { ...options, required })).toBe('validation:emailAddress')
+    })
+
+    it('should allow a valid email', () => {
+      expect(email('user@example.com', { ...options, required: true })).toBe(true)
+    })
+
+    describe.each(['server', 'client'])('username authentication on the %s', (environment) => {
+      it.each([
+        {
+          scenario: 'neither identifier',
+          requireEmail: false,
+          requireUsername: false,
+          value: '',
+          username: undefined,
+          expected: 'validation:required',
+        },
+        {
+          scenario: 'username without email',
+          requireEmail: false,
+          requireUsername: false,
+          value: '',
+          username: 'example',
+          expected: true,
+        },
+        {
+          scenario: 'email without username',
+          requireEmail: false,
+          requireUsername: false,
+          value: 'user@example.com',
+          username: undefined,
+          expected: true,
+        },
+        {
+          scenario: 'malformed email with username',
+          requireEmail: false,
+          requireUsername: false,
+          value: 'invalid-address',
+          username: 'example',
+          expected: 'validation:emailAddress',
+        },
+        {
+          scenario: 'required email with username',
+          requireEmail: true,
+          requireUsername: false,
+          value: '',
+          username: 'example',
+          expected: 'validation:required',
+        },
+        {
+          scenario: 'optional email with required username',
+          requireEmail: false,
+          requireUsername: true,
+          value: '',
+          username: 'example',
+          expected: true,
+        },
+      ])(
+        'should preserve the rules for $scenario',
+        ({ expected, requireEmail, requireUsername, username, value }) => {
+          const collection = {
+            slug: 'users',
+            auth: { loginWithUsername: { allowEmailLogin: true, requireEmail, requireUsername } },
+          }
+          const validationOptions = {
+            ...options,
+            collectionSlug: collection.slug,
+            req: {
+              ...options.req,
+              payload: {
+                ...options.req.payload,
+                collections:
+                  environment === 'server' ? { users: { config: collection } } : undefined,
+                config: { ...options.req.payload.config, collections: [collection] },
+              },
+            },
+            required: requireEmail,
+            siblingData: { username },
+          }
+
+          expect(email(value, validationOptions)).toBe(expected)
+        },
+      )
+    })
+  })
+
+  describe('text', () => {
+    it('should validate', () => {
+      const val = 'test'
+      const result = text(val, options)
+      expect(result).toBe(true)
+    })
+    it('should show required message', () => {
+      const val = undefined
+      const result = text(val, { ...options, required: true })
+      expect(result).toBe('validation:required')
+    })
+    it('should handle undefined', () => {
+      const val = undefined
+      const result = text(val, options)
+      expect(result).toBe(true)
+    })
+    it('should validate maxLength', () => {
+      const val = 'toolong'
+      const result = text(val, { ...options, maxLength: 5 })
+      expect(result).toBe('validation:shorterThanMax')
+    })
+    it('should validate minLength', () => {
+      const val = 'short'
+      const result = text(val, { ...options, minLength: 10 })
+      expect(result).toBe('validation:longerThanMin')
+    })
+    it('should validate maxLength with no value', () => {
+      const val = undefined
+      const result = text(val, { ...options, maxLength: 5 })
+      expect(result).toBe(true)
+    })
+    it('should validate minLength with no value', () => {
+      const val = undefined
+      const result = text(val, { ...options, minLength: 10 })
+      expect(result).toBe(true)
+    })
+    it('should validate minLength with empty string', () => {
+      const val = ''
+      const result = text(val, { ...options, required: false, minLength: 1 })
+      expect(result).toBe('validation:longerThanMin')
+    })
+    it('should validate an array of texts', async () => {
+      const val = ['test']
+      const result = text(val, { ...options, hasMany: true })
+      expect(result).toBe(true)
+    })
+    it('should handle required array of texts', async () => {
+      const val = ['test']
+      const result = text(val, { ...options, hasMany: true, required: true })
+      expect(result).toBe(true)
+    })
+    it('should accept localized object value when required', () => {
+      const val = { en: 'English text', es: 'Spanish text' }
+      const result = text(val as any, { ...options, required: true })
+      expect(result).toBe(true)
+    })
+    it('should reject null when required', () => {
+      const result = text(null as any, { ...options, required: true })
+      expect(result).toBe('validation:required')
+    })
+    it('should reject empty string when required', () => {
+      const result = text('', { ...options, required: true })
+      expect(result).toBe('validation:required')
+    })
+  })
+
+  describe('textarea', () => {
+    options = { ...options, field: { name: 'test', type: 'textarea' } }
+    it('should validate', () => {
+      const val = 'test'
+      const result = textarea(val, options)
+      expect(result).toBe(true)
+    })
+    it('should show required message', () => {
+      const val = undefined
+      const result = textarea(val, { ...options, required: true })
+      expect(result).toBe('validation:required')
+    })
+
+    it('should handle undefined', () => {
+      const val = undefined
+      const result = textarea(val, options)
+      expect(result).toBe(true)
+    })
+    it('should validate maxLength', () => {
+      const val = 'toolong'
+      const result = textarea(val, { ...options, maxLength: 5 })
+      expect(result).toBe('validation:shorterThanMax')
+    })
+
+    it('should validate minLength', () => {
+      const val = 'short'
+      const result = textarea(val, { ...options, minLength: 10 })
+      expect(result).toBe('validation:longerThanMin')
+    })
+    it('should validate maxLength with no value', () => {
+      const val = undefined
+      const result = textarea(val, { ...options, maxLength: 5 })
+      expect(result).toBe(true)
+    })
+    it('should validate minLength with no value', () => {
+      const val = undefined
+      const result = textarea(val, { ...options, minLength: 10 })
+      expect(result).toBe(true)
+    })
+  })
+
+  describe('password', () => {
+    const passwordOptions = {
+      ...options,
+      name: 'test',
+      type: 'password',
+    }
+    it('should validate', () => {
+      const val = 'test'
+      const result = password(val, passwordOptions)
+      expect(result).toBe(true)
+    })
+    it('should show required message', () => {
+      const val = undefined
+      const result = password(val, { ...passwordOptions, required: true })
+      expect(result).toBe('validation:required')
+    })
+    it('should handle undefined', () => {
+      const val = undefined
+      const result = password(val, passwordOptions)
+      expect(result).toBe(true)
+    })
+    it('should validate maxLength', () => {
+      const val = 'toolong'
+      const result = password(val, { ...passwordOptions, maxLength: 5 })
+      expect(result).toBe('validation:shorterThanMax')
+    })
+    it('should validate minLength', () => {
+      const val = 'short'
+      const result = password(val, { ...passwordOptions, minLength: 10 })
+      expect(result).toBe('validation:longerThanMin')
+    })
+    it('should validate maxLength with no value', () => {
+      const val = undefined
+      const result = password(val, { ...passwordOptions, maxLength: 5 })
+      expect(result).toBe(true)
+    })
+    it('should validate minLength with no value', () => {
+      const val = undefined
+      const result = password(val, { ...passwordOptions, minLength: 10 })
+      expect(result).toBe(true)
+    })
+  })
+
+  describe('point', () => {
+    const pointOptions: Parameters<PointFieldValidation>[1] = {
+      ...options,
+      name: 'point',
+      type: 'point',
+    }
+    type PointFieldValue = [number | string, number | string]
+    it('should validate numbers', () => {
+      const val: PointFieldValue = ['0.1', '0.2']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should validate strings that could be numbers', () => {
+      const val: PointFieldValue = ['0.1', '0.2']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should show required message when undefined', () => {
+      const val = undefined
+      const result = point(val, { ...pointOptions, required: true })
+      expect(result).not.toBe(true)
+    })
+    it('should show required message when array', () => {
+      const val = []
+      const result = point(val, { ...pointOptions, required: true })
+      expect(result).not.toBe(true)
+    })
+    it('should show required message when array of undefined', () => {
+      const val = [undefined, undefined]
+      const result = point(val, { ...pointOptions, required: true })
+      expect(result).not.toBe(true)
+    })
+    it('should handle undefined not required', () => {
+      const val = undefined
+      const result = password(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should handle empty array not required', () => {
+      const val = []
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should handle array of undefined not required', () => {
+      const val = [undefined, undefined]
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should prevent text input', () => {
+      const val = ['bad', 'input']
+      const result = point(val, pointOptions)
+      expect(result).not.toBe(true)
+    })
+    it('should prevent missing value', () => {
+      const val = [0.1]
+      const result = point(val, pointOptions)
+      expect(result).not.toBe(true)
+    })
+    it('should validate longitude within bounds', () => {
+      const val: PointFieldValue = ['180', '0']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should validate longitude at lower bound', () => {
+      const val: PointFieldValue = ['-180', '0']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should prevent longitude below lower bound', () => {
+      const val: PointFieldValue = ['-181', '0']
+      const result = point(val, pointOptions)
+      expect(result).toBe('validation:longitudeOutOfBounds')
+    })
+    it('should prevent longitude above upper bound', () => {
+      const val: PointFieldValue = ['181', '0']
+      const result = point(val, pointOptions)
+      expect(result).toBe('validation:longitudeOutOfBounds')
+    })
+    it('should validate latitude within bounds', () => {
+      const val: PointFieldValue = ['0', '90']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should validate latitude at lower bound', () => {
+      const val: PointFieldValue = ['0', '-90']
+      const result = point(val, pointOptions)
+      expect(result).toBe(true)
+    })
+    it('should prevent latitude below lower bound', () => {
+      const val: PointFieldValue = ['0', '-91']
+      const result = point(val, pointOptions)
+      expect(result).toBe('validation:latitudeOutOfBounds')
+    })
+    it('should prevent latitude above upper bound', () => {
+      const val: PointFieldValue = ['0', '91']
+      const result = point(val, pointOptions)
+      expect(result).toBe('validation:latitudeOutOfBounds')
+    })
+  })
+
+  describe('relationship', () => {
+    const relationCollection = {
+      slug: 'relation',
+      fields: [
+        {
+          name: 'id',
+          type: 'text',
+        },
+      ],
+    }
+
+    const relationshipOptions = {
+      ...options,
+      relationTo: 'relation',
+      req: {
+        ...options.req,
+        payload: {
+          ...options.req.payload,
+          collections: {
+            relation: {
+              config: relationCollection,
+            },
+          },
+          config: {
+            collections: [relationCollection],
+          },
+        },
+      },
+    }
+    it('should handle required', async () => {
+      const val = undefined
+      const result = await relationship(val, { ...relationshipOptions, required: true })
+      expect(result).not.toBe(true)
+    })
+    it('should handle required with hasMany', async () => {
+      const val = []
+      const result = await relationship(val, {
+        ...relationshipOptions,
+        hasMany: true,
+        required: true,
+      })
+      expect(result).not.toBe(true)
+    })
+    it('should enforce hasMany min', async () => {
+      const minOptions = {
+        ...relationshipOptions,
+        hasMany: true,
+        minRows: 2,
+      }
+
+      const val = ['a']
+
+      const result = await relationship(val, minOptions)
+      expect(result).not.toBe(true)
+
+      const allowed = await relationship(['a', 'b'], minOptions)
+      expect(allowed).toStrictEqual(true)
+    })
+    it('should enforce hasMany max', async () => {
+      const maxOptions = {
+        ...relationshipOptions,
+        hasMany: true,
+        maxRows: 2,
+      }
+      let val = ['a', 'b', 'c']
+
+      const result = await relationship(val, maxOptions)
+      expect(result).not.toBe(true)
+
+      val = ['a']
+      const allowed = await relationship(val, maxOptions)
+      expect(allowed).toStrictEqual(true)
+    })
+  })
+
+  describe('select', () => {
+    const selectOptions: Parameters<SelectFieldValidation>[1] = {
+      ...options,
+      type: 'select',
+      options: ['one', 'two', 'three'],
+    }
+    const optionsRequired: Parameters<SelectFieldValidation>[1] = {
+      ...selectOptions,
+      options: [
+        {
+          label: 'One',
+          value: 'one',
+        },
+        {
+          label: 'two',
+          value: 'two',
+        },
+        {
+          label: 'three',
+          value: 'three',
+        },
+      ],
+      required: true,
+    }
+    const optionsWithEmptyString: Parameters<SelectFieldValidation>[1] = {
+      ...selectOptions,
+      options: [
+        {
+          label: 'None',
+          value: '',
+        },
+        {
+          label: 'Option',
+          value: 'option',
+        },
+      ],
+    }
+    it('should allow valid input', async () => {
+      const val = 'one'
+      const result = await select(val, selectOptions)
+      expect(result).toStrictEqual(true)
+    })
+    it('should prevent invalid input', async () => {
+      const val = 'bad'
+      const result = await select(val, selectOptions)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should allow null input', async () => {
+      const val = null
+      const result = await select(val, selectOptions)
+      expect(result).toStrictEqual(true)
+    })
+    it('should allow undefined input', async () => {
+      let val
+      const result = await select(val, selectOptions)
+      expect(result).toStrictEqual(true)
+    })
+    it('should prevent empty string input', async () => {
+      const val = ''
+      const result = await select(val, selectOptions)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent undefined input with required', async () => {
+      let val
+      const result = await select(val, optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent empty string input with required', async () => {
+      const result = await select('', optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent undefined input with required and hasMany', async () => {
+      let val
+      options.hasMany = true
+      const result = await select(val, optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent empty array input with required and hasMany', async () => {
+      optionsRequired.hasMany = true
+      const result = await select([], optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent empty string array input with required and hasMany', async () => {
+      options.hasMany = true
+      const result = await select([''], optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should prevent null input with required and hasMany', async () => {
+      const val = null
+      options.hasMany = true
+      const result = await select(val, optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should allow valid input with option objects', async () => {
+      const val = 'one'
+      options.hasMany = false
+      const result = await select(val, optionsRequired)
+      expect(result).toStrictEqual(true)
+    })
+    it('should prevent invalid input with option objects', async () => {
+      const val = 'bad'
+      options.hasMany = false
+      const result = await select(val, optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should allow empty string input with option object', async () => {
+      const val = ''
+      const result = await select(val, optionsWithEmptyString)
+      expect(result).toStrictEqual(true)
+    })
+    it('should allow empty string input with option object and required', async () => {
+      const val = ''
+      optionsWithEmptyString.required = true
+      const result = await select(val, optionsWithEmptyString)
+      expect(result).toStrictEqual(true)
+    })
+    it('should allow valid input with hasMany', async () => {
+      const val = ['one', 'two']
+      const result = await select(val, selectOptions)
+      expect(result).toStrictEqual(true)
+    })
+    it('should prevent invalid input with hasMany', async () => {
+      const val = ['one', 'bad']
+      const result = await select(val, selectOptions)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should allow valid input with hasMany option objects', async () => {
+      const val = ['one', 'three']
+      optionsRequired.hasMany = true
+      const result = await select(val, optionsRequired)
+      expect(result).toStrictEqual(true)
+    })
+    it('should prevent invalid input with hasMany option objects', async () => {
+      const val = ['three', 'bad']
+      optionsRequired.hasMany = true
+      const result = await select(val, optionsRequired)
+      expect(result).not.toStrictEqual(true)
+    })
+    it('should resolve a promise-returning filterOptions before validating', async () => {
+      const val = 'one'
+      const filterOptions: SelectField['filterOptions'] = async ({ options }) => {
+        await Promise.resolve()
+        return options
+      }
+      const result = await select(val, { ...selectOptions, filterOptions })
+      expect(result).toStrictEqual(true)
+    })
+    it('should reject a value excluded by a promise-returning filterOptions', async () => {
+      const val = 'one'
+      const filterOptions: SelectField['filterOptions'] = async ({ options }) => {
+        await Promise.resolve()
+        return (options as string[]).filter((option) => option !== 'one')
+      }
+      const result = await select(val, { ...selectOptions, filterOptions })
+      expect(result).not.toStrictEqual(true)
+    })
+  })
+
+  describe('blocks', () => {
+    const blocksOptions: Parameters<BlocksFieldValidation>[1] = {
+      ...options,
+    }
+    it('basic blocks should pass validation', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+      const result = await blocks(val, blocksOptions)
+      expect(result).toStrictEqual(true)
+    })
+
+    it('should respect required validation', async () => {
+      const result1 = await blocks(
+        [
+          {
+            blockType: 'block1',
+            someField: 'some data',
+          },
+        ],
+        { ...blocksOptions, required: true },
+      )
+      expect(result1).toStrictEqual(true)
+
+      const result2 = await blocks([], { ...blocksOptions, required: true })
+      expect(result2).not.toStrictEqual(true)
+
+      const result3 = await blocks(undefined, { ...blocksOptions, required: true })
+      expect(result3).not.toStrictEqual(true)
+
+      const result4 = await blocks(null, { ...blocksOptions, required: true })
+      expect(result4).not.toStrictEqual(true)
+    })
+
+    it('should respect minRows validation', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+      const result1 = await blocks(val, { ...blocksOptions, minRows: 0 })
+      expect(result1).toStrictEqual(true)
+      const result2 = await blocks(val, { ...blocksOptions, minRows: 2 })
+      expect(result2).toStrictEqual(true)
+
+      const result3 = await blocks(val, { ...blocksOptions, minRows: 3 })
+      expect(result3).not.toStrictEqual(true)
+    })
+
+    it('should respect maxRows validation', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+
+      const result1 = await blocks(val, { ...blocksOptions, maxRows: 2 })
+      expect(result1).toStrictEqual(true)
+      const result2 = await blocks(val, { ...blocksOptions, maxRows: 3 })
+      expect(result2).toStrictEqual(true)
+
+      const result3 = await blocks(val, { ...blocksOptions, maxRows: 1 })
+      expect(result3).not.toStrictEqual(true)
+    })
+
+    it('should respect both minRows and maxRows validation', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+      const result1 = await blocks(val, { ...blocksOptions, maxRows: 2, minRows: 2 })
+      expect(result1).toStrictEqual(true)
+
+      const result2 = await blocks(val, { ...blocksOptions, maxRows: 1, minRows: 4 })
+      expect(result2).not.toStrictEqual(true)
+
+      const result3 = await blocks(val, { ...blocksOptions, maxRows: 1, minRows: 0 })
+      expect(result3).not.toStrictEqual(true)
+
+      const result4 = await blocks(val, { ...blocksOptions, maxRows: 5, minRows: 3 })
+      expect(result4).not.toStrictEqual(true)
+    })
+
+    it('should validate static filterOptions', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+      const result1 = await blocks(val, { ...blocksOptions, filterOptions: ['block1', 'block2'] })
+      expect(result1).toStrictEqual(true)
+
+      const result2 = await blocks(val, {
+        ...blocksOptions,
+        filterOptions: ['block1', 'block2', 'block3'],
+      })
+      expect(result2).toStrictEqual(true)
+
+      const result3 = await blocks(val, { ...blocksOptions, filterOptions: ['block1', 'block3'] })
+      expect(result3).not.toStrictEqual(true)
+
+      const result4 = await blocks(val, { ...blocksOptions, filterOptions: [] })
+      expect(result4).not.toStrictEqual(true)
+    })
+
+    it('should validate dynamic filterOptions 1', async () => {
+      const val: any[] = [
+        {
+          blockType: 'block1',
+          someField: 'some data',
+        },
+        {
+          blockType: 'block2',
+          someField: 'some data',
+        },
+      ]
+      const result1 = await blocks(val, { ...blocksOptions, filterOptions: () => true })
+      expect(result1).toStrictEqual(true)
+
+      const result2 = await blocks(val, {
+        ...blocksOptions,
+        filterOptions: () => ['block1', 'block2'],
+      })
+      expect(result2).toStrictEqual(true)
+
+      const result3 = await blocks(val, {
+        ...blocksOptions,
+        filterOptions: () => ['block1', 'block2', 'block3'],
+      })
+      expect(result3).toStrictEqual(true)
+
+      const result4 = await blocks(val, { ...blocksOptions, filterOptions: () => [] })
+      expect(result4).not.toStrictEqual(true)
+
+      const result5 = await blocks(val, { ...blocksOptions, filterOptions: () => ['block1'] })
+      expect(result5).not.toStrictEqual(true)
+
+      const result6 = await blocks(val, {
+        ...blocksOptions,
+        filterOptions: () => ['block1', 'block3'],
+      })
+      expect(result6).not.toStrictEqual(true)
+    })
+  })
+
+  describe('json', () => {
+    const jsonOptions: Parameters<JSONFieldValidation>[1] = {
+      ...options,
+      name: 'test',
+      type: 'json',
+    }
+
+    it('should validate a value with no jsonSchema', async () => {
+      const result = await json({ foo: 'bar' } as any, jsonOptions)
+      expect(result).toBe(true)
+    })
+
+    it('should show required message when empty', async () => {
+      const result = await json(undefined as any, { ...jsonOptions, required: true })
+      expect(result).toBe('validation:required')
+    })
+
+    it('should show invalid input message when jsonError is set', async () => {
+      const result = await json({} as any, { ...jsonOptions, jsonError: 'parse error' })
+      expect(result).toBe('validation:invalidInput')
+    })
+
+    describe('with jsonSchema', () => {
+      const jsonSchema = {
+        schema: {
+          type: 'object',
+          required: ['name'],
+          properties: {
+            name: { type: 'string' },
+          },
+        },
+        uri: 'a://b/foo.json',
+      }
+
+      it('should pass when the value matches the schema', async () => {
+        const result = await json({ name: 'Alice' } as any, { ...jsonOptions, jsonSchema })
+        expect(result).toBe(true)
+      })
+
+      it('should return an error message when the value violates a required property', async () => {
+        const result = await json({ other: 'field' } as any, { ...jsonOptions, jsonSchema })
+        expect(result).not.toBe(true)
+        expect(typeof result).toBe('string')
+      })
+
+      it('should return an error message when a property has the wrong type', async () => {
+        const result = await json({ name: 123 } as any, { ...jsonOptions, jsonSchema })
+        expect(result).not.toBe(true)
+        expect(typeof result).toBe('string')
+      })
+
+      it('should skip validation for an empty value', async () => {
+        const result = await json(null as any, { ...jsonOptions, jsonSchema })
+        expect(result).toBe(true)
+      })
+
+      it('should return a dotted path in the error message for a nested property violation', async () => {
+        const nestedSchema = {
+          schema: {
+            type: 'object',
+            properties: {
+              address: {
+                type: 'object',
+                properties: {
+                  zip: { type: 'string' },
+                },
+              },
+            },
+          },
+          uri: 'a://b/foo.json',
+        }
+        const result = await json({ address: { zip: 12345 } } as any, {
+          ...jsonOptions,
+          jsonSchema: nestedSchema,
+        })
+        expect(result).toContain('address.zip')
+      })
+
+      it('should return a comma-joined message when multiple properties are invalid', async () => {
+        const multiSchema = {
+          schema: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              age: { type: 'number' },
+              name: { type: 'string' },
+            },
+          },
+          uri: 'a://b/foo.json',
+        }
+        const result = await json({ age: 'not a number' } as any, {
+          ...jsonOptions,
+          jsonSchema: multiSchema,
+        })
+        expect(result).toContain(', ')
+      })
+    })
+
+    describe('with the JSON field test fixture schema', () => {
+      // Mirrors test/fields/collections/JSON/index.tsx to catch fromJSONSchema gaps for this exact shape
+      const jsonSchema = {
+        schema: {
+          type: 'object',
+          properties: {
+            array: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  object: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      array: {
+                        type: 'array',
+                        items: {
+                          type: 'number',
+                        },
+                      },
+                      text: {
+                        type: 'string',
+                      },
+                    },
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+              },
+            },
+            foo: {
+              enum: ['bar', 'foobar'],
+            },
+            number: {
+              enum: [10, 5],
+            },
+          },
+        },
+        uri: 'a://b/foo.json',
+      }
+
+      it('should pass when the value matches the fixture schema', async () => {
+        const result = await json(
+          {
+            array: [{ object: { array: [1, 2], text: 'nested' }, text: 'row' }],
+            foo: 'bar',
+            number: 10,
+          } as any,
+          { ...jsonOptions, jsonSchema },
+        )
+        expect(result).toBe(true)
+      })
+
+      it('should reject additional properties nested inside the array items', async () => {
+        const result = await json(
+          { array: [{ object: { text: 'nested' }, text: 'row', unexpected: true }] } as any,
+          { ...jsonOptions, jsonSchema },
+        )
+        expect(result).not.toBe(true)
+        expect(typeof result).toBe('string')
+      })
+    })
+  })
+
+  describe('number', () => {
+    const numberOptions = {
+      ...options,
+      name: 'test',
+      type: 'number',
+    }
+    it('should validate', () => {
+      const val = 1
+      const result = number(val, numberOptions)
+      expect(result).toBe(true)
+    })
+    it('should validate 0', () => {
+      const val = 0
+      const result = number(val, { ...numberOptions, required: true })
+      expect(result).toBe(true)
+    })
+    it('should validate 2', () => {
+      const val = 1.5
+      const result = number(val, numberOptions)
+      expect(result).toBe(true)
+    })
+    it('should show invalid number message', () => {
+      const val = 'test'
+      const result = number(val, { ...numberOptions })
+      expect(result).toBe('validation:enterNumber')
+    })
+    it('should handle empty value', () => {
+      const val = ''
+      const result = number(val, { ...numberOptions })
+      expect(result).toBe(true)
+    })
+    it('should handle required value', () => {
+      const val = ''
+      const result = number(val, { ...numberOptions, required: true })
+      expect(result).toBe('validation:required')
+    })
+    it('should validate minValue', () => {
+      const val = 2.4
+      const result = number(val, { ...numberOptions, min: 2.5 })
+      expect(result).toBe('validation:lessThanMin')
+    })
+    it('should validate maxValue', () => {
+      const val = 1.25
+      const result = number(val, { ...numberOptions, max: 1 })
+      expect(result).toBe('validation:greaterThanMax')
+    })
+    it('should validate an array of numbers', async () => {
+      const val = [1.25, 2.5]
+      const result = number(val, { ...numberOptions, hasMany: true })
+      expect(result).toBe(true)
+    })
+    it('should validate an array of numbers using min', async () => {
+      const val = [1.25, 2.5]
+      const result = number(val, { ...numberOptions, hasMany: true, min: 3 })
+      expect(result).toBe('validation:lessThanMin')
+    })
+    it('should validate an array of numbers using max', async () => {
+      const val = [1.25, 2.5]
+      const result = number(val, { ...numberOptions, hasMany: true, max: 1 })
+      expect(result).toBe('validation:greaterThanMax')
+    })
+    it('should interpolate the offending number instead of the whole array', () => {
+      const val = [1.25, 2.5]
+
+      number(val, { ...numberOptions, hasMany: true, max: 2 })
+
+      expect(t).toHaveBeenLastCalledWith('validation:greaterThanMax', {
+        label: 'general:value',
+        max: 2,
+        value: 2.5,
+      })
+    })
+    it('should validate an array of numbers using minRows', async () => {
+      const val = [1.25, 2.5]
+      const result = number(val, { ...numberOptions, hasMany: true, minRows: 4 })
+      expect(result).toBe('validation:requiresAtLeast')
+    })
+    it('should validate an array of numbers using maxRows', async () => {
+      const val = [1.25, 2.5, 3.5]
+      const result = number(val, { ...numberOptions, hasMany: true, maxRows: 2 })
+      expect(result).toBe('validation:requiresNoMoreThan')
+    })
+  })
+})

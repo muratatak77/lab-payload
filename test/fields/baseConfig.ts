@@ -1,0 +1,250 @@
+import type { CollectionConfig, Config } from 'payload'
+
+import { fileURLToPath } from 'node:url'
+import path from 'path'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+import ArrayFields from './collections/Array/index.js'
+import { BlockFields } from './collections/Blocks/index.js'
+import CheckboxFields from './collections/Checkbox/index.js'
+import CodeFields from './collections/Code/index.js'
+import CollapsibleFields from './collections/Collapsible/index.js'
+import ConditionalLogic from './collections/ConditionalLogic/index.js'
+import { CustomRowID } from './collections/CustomID/CustomRowID.js'
+import { CustomTabID } from './collections/CustomID/CustomTabID.js'
+import { CustomID } from './collections/CustomID/index.js'
+import { CustomIDNested } from './collections/CustomIDNested/index.js'
+import DateFields from './collections/Date/index.js'
+import DuplicateFields from './collections/Duplicate/index.js'
+import EmailFields from './collections/Email/index.js'
+import GroupFields from './collections/Group/index.js'
+import IndexedFields from './collections/Indexed/index.js'
+import JSONFields from './collections/JSON/index.js'
+import NumberFields from './collections/Number/index.js'
+import PointFields from './collections/Point/index.js'
+import RadioFields from './collections/Radio/index.js'
+import RelationshipFields from './collections/Relationship/index.js'
+import RowFields from './collections/Row/index.js'
+import SelectFields from './collections/Select/index.js'
+import SelectVersionsFields from './collections/SelectVersions/index.js'
+import SlugField from './collections/SlugField/index.js'
+import { SlugFieldAccess } from './collections/SlugFieldAccess/index.js'
+import { SlugFieldAutosave } from './collections/SlugFieldAutosave/index.js'
+import TabsFields from './collections/Tabs/index.js'
+import { TabsFields2 } from './collections/Tabs2/index.js'
+import TextFields from './collections/Text/index.js'
+import TextareaFields from './collections/Textarea/index.js'
+import UIFields from './collections/UI/index.js'
+import Uploads from './collections/Upload/index.js'
+import Uploads2 from './collections/Upload2/index.js'
+import UploadsMulti from './collections/UploadMulti/index.js'
+import UploadsMultiPoly from './collections/UploadMultiPoly/index.js'
+import UploadsPoly from './collections/UploadPoly/index.js'
+import UploadRestricted from './collections/UploadRestricted/index.js'
+import Uploads3 from './collections/Uploads3/index.js'
+import { seed } from './seed.js'
+
+export const collections: CollectionConfig[] = [
+  {
+    slug: 'users',
+    admin: {
+      useAsTitle: 'email',
+    },
+    auth: true,
+    fields: [
+      {
+        name: 'canViewConditionalField',
+        type: 'checkbox',
+        defaultValue: true,
+      },
+    ],
+  },
+  SelectVersionsFields,
+  ArrayFields,
+  BlockFields,
+  CheckboxFields,
+  CodeFields,
+  CollapsibleFields,
+  ConditionalLogic,
+  CustomID,
+  CustomIDNested,
+  CustomTabID,
+  CustomRowID,
+  DateFields,
+  DuplicateFields,
+  EmailFields,
+  RadioFields,
+  GroupFields,
+  RowFields,
+  IndexedFields,
+  JSONFields,
+  NumberFields,
+  PointFields,
+  RelationshipFields,
+  SelectFields,
+  SlugField,
+  SlugFieldAccess,
+  SlugFieldAutosave,
+  TabsFields2,
+  TabsFields,
+  TextFields,
+  TextareaFields,
+  Uploads,
+  Uploads2,
+  Uploads3,
+  UploadsMulti,
+  UploadsPoly,
+  UploadsMultiPoly,
+  UploadRestricted,
+  UIFields,
+]
+
+export const baseConfig: Partial<Config> = {
+  admin: {
+    components: {
+      afterNavLinks: ['/components/AfterNavLinks.js#AfterNavLinks'],
+    },
+    custom: {
+      client: {
+        'new-value': 'client available',
+      },
+    },
+    importMap: {
+      baseDir: path.resolve(dirname),
+    },
+    timezones: {
+      defaultTimezone: 'America/Monterrey',
+      supportedTimezones: ({ defaultTimezones }) => [
+        ...defaultTimezones,
+        { label: '(GMT-6) Monterrey, Nuevo Leon', value: 'America/Monterrey' },
+        { label: 'Custom UTC', value: 'UTC' },
+      ],
+    },
+  },
+  blocks: [
+    {
+      slug: 'ConfigBlockTest',
+      fields: [
+        {
+          name: 'deduplicatedText',
+          type: 'text',
+          hooks: {
+            beforeValidate: [
+              ({ req, value }) => {
+                req.context.configBlockVisited = true
+                return value
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      slug: 'conditionalReference',
+      fields: [
+        {
+          name: 'testBlocks',
+          type: 'blocks',
+          admin: {
+            condition: (data) => Boolean(data.showConditionalFields),
+          },
+          blocks: [
+            {
+              slug: 'testBlock',
+              fields: [
+                {
+                  name: 'testField',
+                  type: 'text',
+                },
+              ],
+              labels: {
+                plural: 'Test Blocks',
+                singular: 'Test Block',
+              },
+            },
+          ],
+          defaultValue: [{ blockType: 'testBlock' }],
+          maxRows: 1,
+          minRows: 1,
+          required: true,
+        },
+      ],
+    },
+    {
+      slug: 'localizedTextReference',
+      fields: [
+        {
+          name: 'text',
+          type: 'text',
+          localized: true,
+        },
+      ],
+    },
+    {
+      slug: 'localizedTextReference2',
+      fields: [
+        {
+          name: 'text',
+          type: 'text',
+          localized: true,
+        },
+      ],
+    },
+    {
+      slug: 'sharedBlock',
+      fields: [
+        {
+          name: 'globalText',
+          type: 'text',
+          hooks: {
+            afterChange: [
+              ({ req, value }) => {
+                req.context.globalBlockAfterChange = true
+                return value
+              },
+            ],
+            afterRead: [
+              ({ req, value }) => {
+                req.context.globalBlockRead = true
+                return value
+              },
+            ],
+            beforeChange: [
+              ({ req, value }) => {
+                req.context.globalBlockBeforeChange = true
+                return value
+              },
+            ],
+            beforeValidate: [
+              ({ req, value }) => {
+                req.context.globalBlockVisited = true
+                return value
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ],
+  collections,
+  custom: {
+    client: {
+      'new-value': 'client available',
+    },
+    server: {
+      'new-server-value': 'only available on server',
+    },
+  },
+  localization: {
+    defaultLocale: 'en',
+    fallback: true,
+    locales: ['en', 'es'],
+  },
+  typescript: {
+    outputFile: path.resolve(dirname, 'payload-types.ts'),
+  },
+}
+
+export { seed }

@@ -1,0 +1,107 @@
+import type { CollectionAfterChangeHook } from 'payload'
+
+import type { Email, FormattedEmail, FormBuilderPluginConfig } from '../../../types.js'
+
+import { serializeLexical } from '../../../utilities/lexical/serializeLexical.js'
+import { replaceDoubleCurlys } from '../../../utilities/replaceDoubleCurlys.js'
+
+type AfterChangeParams = Parameters<CollectionAfterChangeHook>[0]
+
+export const sendEmail = async (
+  afterChangeParameters: AfterChangeParams,
+  formConfig: FormBuilderPluginConfig,
+) => {
+  if (afterChangeParameters.operation === 'create') {
+    const {
+      data,
+      doc: { id: formSubmissionID },
+      req: { locale, payload },
+      req,
+    } = afterChangeParameters
+
+    const { form: formID, submissionData: submissionDataFromProps } = data || {}
+    const { beforeEmail, defaultToEmail, formOverrides } = formConfig || {}
+
+    try {
+      const form = await payload.findByID({
+        id: formID,
+        collection: formOverrides?.slug || 'forms',
+        locale,
+        overrideAccess: true,
+        req,
+      })
+
+      const emails = form.emails as Email[]
+
+      const submissionData = [
+        ...submissionDataFromProps,
+        {
+          field: 'formSubmissionID',
+          value: String(formSubmissionID),
+        },
+      ]
+
+      if (emails && emails.length) {
+        const formattedEmails: FormattedEmail[] = await Promise.all(
+          emails.map(async (email: Email): Promise<FormattedEmail> => {
+            const {
+              bcc: emailBCC,
+              cc: emailCC,
+              emailFrom,
+              emailTo: emailToFromConfig,
+              message,
+              replyTo: emailReplyTo,
+              subject,
+            } = email
+
+            const emailTo = emailToFromConfig || defaultToEmail || payload.email.defaultFromAddress
+
+            const to = replaceDoubleCurlys(emailTo, submissionData)
+            const cc = emailCC ? replaceDoubleCurlys(emailCC, submissionData) : ''
+            const bcc = emailBCC ? replaceDoubleCurlys(emailBCC, submissionData) : ''
+            const from = replaceDoubleCurlys(emailFrom, submissionData)
+            const replyTo = replaceDoubleCurlys(emailReplyTo || emailFrom, submissionData)
+
+            const serializedMessage = await serializeLexical(message, submissionData)
+
+            return {
+              bcc,
+              cc,
+              from,
+              html: `<div>${serializedMessage}</div>`,
+              replyTo,
+              subject: replaceDoubleCurlys(subject, submissionData),
+              to,
+            }
+          }),
+        )
+
+        let emailsToSend = formattedEmails
+
+        if (typeof beforeEmail === 'function') {
+          emailsToSend = await beforeEmail(formattedEmails, afterChangeParameters)
+        }
+
+        await Promise.all(
+          emailsToSend.map(async (email) => {
+            const { to } = email
+            try {
+              const emailPromise = await payload.sendEmail(email)
+              return emailPromise
+            } catch (err: unknown) {
+              payload.logger.error({
+                err,
+                msg: `Error while sending email to address: ${to}. Email not sent.`,
+              })
+            }
+          }),
+        )
+      } else {
+        payload.logger.info({ msg: 'No emails to send.' })
+      }
+    } catch (err: unknown) {
+      const msg = `Error while sending one or more emails in form submission id: ${formSubmissionID}.`
+      payload.logger.error({ err, msg })
+    }
+  }
+}

@@ -1,0 +1,339 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../../../__helpers/shared/sdk/index.js'
+import type { Config } from '../../payload-types.js'
+
+import { checkFocusIndicators } from '../../../__helpers/e2e/checkFocusIndicators.js'
+import { saveDocAndAssert } from '../../../__helpers/e2e/helpers.js'
+import { runAxeScan } from '../../../__helpers/e2e/runAxeScan.js'
+import { openDocDrawer } from '../../../__helpers/e2e/toggleDocDrawer.js'
+import { AdminUrlUtil } from '../../../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../../../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../../../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../../../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../../../__setup/e2e/initPage.js'
+import { POLL_TOPASS_TIMEOUT, TEST_TIMEOUT_LONG } from '../../../playwright.config.js'
+import { uploadsSlug } from '../../slugs.js'
+
+const filename = fileURLToPath(import.meta.url)
+const currentFolder = path.dirname(filename)
+const dirname = path.resolve(currentFolder, '../../')
+
+const { beforeAll, beforeEach, describe } = test
+
+let payload: PayloadTestSDK<Config>
+let page: Page
+let serverURL: string
+// If we want to make this run in parallel: test.describe.configure({ mode: 'parallel' })
+let url: AdminUrlUtil
+
+describe('Upload', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      // prebuild,
+    }))
+    url = new AdminUrlUtil(serverURL, uploadsSlug)
+
+    const context = await browser.newContext()
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  async function uploadImage() {
+    await page.goto(url.create)
+
+    // create a jpg upload. `setInputFiles` fires a one-shot native change event;
+    // if it lands before the upload field's React onChange is hydrated (the admin
+    // view is an async RSC/Flight payload that hydrates after the shell), the
+    // selection is dropped and the filename never appears. Unlike click/fill,
+    // setInputFiles does not auto-retry, so retry until it registers.
+    await expect(async () => {
+      await page
+        .locator('.file-manager input[type="file"]')
+        .setInputFiles(path.resolve(dirname, './collections/Upload/payload.jpg'))
+      await expect(page.locator('#field-filemanager-filename')).toHaveValue('payload.jpg', {
+        timeout: 2000,
+      })
+    }).toPass({ timeout: POLL_TOPASS_TIMEOUT })
+    await saveDocAndAssert(page)
+  }
+
+  test('should upload files', async () => {
+    await uploadImage()
+  })
+
+  test('should upload files from remote URL', async () => {
+    await page.goto(url.create)
+
+    const remoteImage =
+      'https://raw.githubusercontent.com/payloadcms/website/refs/heads/main/public/images/og-image.jpg'
+
+    // Putting the URL on the clipboard lets the paste button detect and fetch it directly
+    await page.evaluate(async (remoteUrl) => {
+      await navigator.clipboard.writeText(remoteUrl)
+    }, remoteImage)
+
+    await page.locator('.file-manager__pasteFromClipboard').click()
+
+    await expect(page.locator('#field-filemanager-filename')).toHaveValue('og-image.jpg')
+
+    await saveDocAndAssert(page)
+
+    await expect(page.locator('.file-preview__thumbnail img')).toHaveAttribute(
+      'src',
+      /\/api\/uploads\/file\/og-image(?:-\d+)?\.jpg(\?.*)?$/,
+    )
+  })
+
+  test('should open the paste-from-URL modal when the clipboard has no file or URL', async () => {
+    await page.goto(url.create)
+
+    await page.evaluate(async () => {
+      await navigator.clipboard.writeText('')
+    })
+
+    await page.locator('.file-manager__pasteFromClipboard').click()
+
+    const remoteImage =
+      'https://raw.githubusercontent.com/payloadcms/website/refs/heads/main/public/images/og-image.jpg'
+
+    const inputField = page.locator('#upload-paste-url #field-url')
+    await inputField.fill(remoteImage)
+
+    const addFileButton = page.locator('#upload-paste-url button', { hasText: 'Add file' })
+    await addFileButton.click()
+
+    await expect(page.locator('#field-filemanager-filename')).toHaveValue('og-image.jpg')
+
+    await saveDocAndAssert(page)
+
+    await expect(page.locator('.file-preview__thumbnail img')).toHaveAttribute(
+      'src',
+      /\/api\/uploads\/file\/og-image(?:-\d+)?\.jpg(\?.*)?$/,
+    )
+  })
+
+  test('should disable save button during upload progress from remote URL', async () => {
+    await page.goto(url.create)
+
+    const remoteImage =
+      'https://raw.githubusercontent.com/payloadcms/website/refs/heads/main/public/images/og-image.jpg'
+
+    await page.evaluate(async (remoteUrl) => {
+      await navigator.clipboard.writeText(remoteUrl)
+    }, remoteImage)
+
+    // Intercept the upload request
+    await page.route(remoteImage, (route) => setTimeout(() => route.continue(), 2000)) // Artificial 2-second delay
+
+    await page.locator('.file-manager__pasteFromClipboard').click()
+
+    const submitButton = page.locator('.form-submit .btn')
+    await expect(submitButton).toBeDisabled()
+
+    // Wait for the upload to complete
+    await page.waitForResponse(remoteImage)
+
+    // Assert the submit button is re-enabled after upload
+    await expect(submitButton).toBeEnabled()
+  })
+
+  // test that the image renders
+  test('should render uploaded image', async () => {
+    await uploadImage()
+    await expect(page.locator('.file-preview__thumbnail img')).toHaveAttribute(
+      'src',
+      /\/api\/uploads\/file\/payload(?:-\d+)?\.jpg(\?.*)?$/,
+    )
+  })
+
+  test('should upload using the document drawer', async () => {
+    await uploadImage()
+    await wait(1000)
+    // Open the media drawer and create a png upload
+
+    await openDocDrawer({ page, selector: '#field-media .upload__createNewToggler' })
+
+    await page
+      .locator('[id^=doc-drawer_uploads_1_] input[type="file"]')
+      .setInputFiles(path.resolve(dirname, './uploads/payload.png'))
+
+    await expect(
+      page.locator('[id^=doc-drawer_uploads_1_] #field-filemanager-filename'),
+    ).toHaveValue('payload.png')
+
+    await page.locator('[id^=doc-drawer_uploads_1_] #action-save').click()
+    await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+
+    // Assert that the media field has the png upload
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details__filename a'),
+    ).toHaveAttribute('href', /\/api\/uploads\/file\/payload(?:-\d+)?\.png$/)
+
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details__filename a'),
+    ).toContainText(/payload(?:-\d+)?\.png/)
+
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details img'),
+    ).toHaveAttribute('src', /\/api\/uploads\/file\/payload(?:-\d+)?\.png(\?.*)?$/)
+    await saveDocAndAssert(page)
+  })
+
+  // Skip until the crop tool is reworked to v4 design. The redesigned upload UI removed pre-save
+  // image editing — cropping now happens after save via the file toolbar's "Edit Image" button
+  // (see test/uploads `should resize image after crop`), and the create doc-drawer closes on save,
+  // so this drawer-based "edit before save" flow needs reworking once the v4 crop tool lands.
+  test.skip('should upload after editing image inside a document drawer', async () => {
+    await uploadImage()
+    await wait(1000)
+    // Open the media drawer and create a png upload
+
+    await openDocDrawer({ page, selector: '#field-media .upload__createNewToggler' })
+
+    await page
+      .locator('[id^=doc-drawer_uploads_1_] .file-field__upload input[type="file"]')
+      .setInputFiles(path.resolve(dirname, './uploads/payload.png'))
+    await expect(
+      page.locator('[id^=doc-drawer_uploads_1_] .file-field__upload .file-field__filename'),
+    ).toHaveValue('payload.png')
+    await page.locator('[id^=doc-drawer_uploads_1_] .file-field__edit').click()
+    await page
+      .locator('[id^=edit-upload] .edit-upload__input input[name="Width (px)"]')
+      .nth(1)
+      .fill('200')
+    await page
+      .locator('[id^=edit-upload] .edit-upload__input input[name="Height (px)"]')
+      .nth(1)
+      .fill('200')
+    await page.locator('[id^=edit-upload] button:has-text("Apply Changes")').nth(1).click()
+    await page.locator('[id^=doc-drawer_uploads_1_] #action-save').click()
+    await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+
+    // Assert that the media field has the png upload
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details__filename a'),
+    ).toHaveAttribute('href', '/api/uploads/file/payload-1.png')
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details__filename a'),
+    ).toContainText('payload-1.png')
+    await expect(
+      page.locator('.field-type.upload .upload-relationship-details img'),
+    ).toHaveAttribute('src', /\/api\/uploads\/file\/payload-1\.png(\?.*)?$/)
+    await saveDocAndAssert(page)
+  })
+
+  test('should clear selected upload', async () => {
+    await uploadImage()
+    await wait(1000) // TODO: Fix this. Need to wait a bit until the form in the drawer mounted, otherwise values sometimes disappear. This is an issue for all drawers
+
+    await openDocDrawer({ page, selector: '#field-media .upload__createNewToggler' })
+
+    await wait(1000)
+
+    await page
+      .locator('[id^=doc-drawer_uploads_1_] input[type="file"]')
+      .setInputFiles(path.resolve(dirname, './uploads/payload.png'))
+    await expect(
+      page.locator('[id^=doc-drawer_uploads_1_] #field-filemanager-filename'),
+    ).toHaveValue('payload.png')
+    await page.locator('[id^=doc-drawer_uploads_1_] #action-save').click()
+    await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+    await page.locator('.field-type.upload').getByRole('button', { name: 'Remove' }).click()
+  })
+
+  test('should select using the list drawer and restrict mimetype based on filterOptions', async () => {
+    await uploadImage()
+
+    await openDocDrawer({ page, selector: '.field-type.upload .upload__listToggler' })
+
+    const jpgImages = page.locator('[id^=list-drawer_1_] .upload-gallery img[src$=".jpg"]')
+    await expect
+      .poll(async () => await jpgImages.count(), { timeout: POLL_TOPASS_TIMEOUT })
+      .toEqual(0)
+  })
+
+  test.skip('should show drawer for input field when enableRichText is false', async () => {
+    const uploads3URL = new AdminUrlUtil(serverURL, 'uploads3')
+    await page.goto(uploads3URL.create)
+
+    // create file in uploads 3 collection
+    await page
+      .locator('.file-field__upload input[type="file"]')
+      .setInputFiles(path.resolve(dirname, './collections/Upload/payload.jpg'))
+    await expect(page.locator('.file-field .file-field__filename')).toContainText('payload.jpg')
+    await page.locator('#action-save').click()
+
+    await wait(200)
+
+    // open drawer
+    await openDocDrawer({ page, selector: '.field-type.upload .list-drawer__toggler' })
+    // check title
+    await expect(page.locator('.list-drawer__header-text')).toContainText('Uploads 3')
+  })
+
+  describe.skip('A11y', () => {
+    test.fixme('Create view should have no accessibility violations', async ({
+      page: _unusedPage,
+    }, testInfo) => {
+      await page.goto(url.create)
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await runAxeScan({
+        exclude: ['.field-description'], // known issue - reported elsewhere @todo: remove this once fixed - see report https://github.com/payloadcms/payload/discussions/14489
+        include: ['.collection-edit__main'],
+        page,
+        testInfo,
+      })
+
+      expect(scanResults.violations.length).toBe(0)
+    })
+
+    test.fixme('Edit view should have no accessibility violations', async ({
+      page: _unusedPage,
+    }, testInfo) => {
+      await page.goto(url.list)
+      const firstItem = page.locator('.cell-filename a').nth(0)
+      await firstItem.click()
+
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await runAxeScan({
+        exclude: ['.field-description'], // known issue - reported elsewhere @todo: remove this once fixed - see report https://github.com/payloadcms/payload/discussions/14489
+        include: ['.collection-edit__main'],
+        page,
+        testInfo,
+      })
+
+      expect(scanResults.violations.length).toBe(0)
+    })
+
+    test('Upload fields have focus indicators', async ({ page: _unusedPage }, testInfo) => {
+      await page.goto(url.create)
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await checkFocusIndicators({
+        page,
+        selector: '.collection-edit__main',
+        testInfo,
+      })
+
+      expect(scanResults.totalFocusableElements).toBeGreaterThan(0)
+      expect(scanResults.elementsWithoutIndicators).toBe(0)
+    })
+  })
+})

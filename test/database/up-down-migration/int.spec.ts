@@ -1,0 +1,56 @@
+import { existsSync, rmSync } from 'fs'
+import path from 'path'
+import { buildConfig, getPayload } from 'payload'
+import { fileURLToPath } from 'url'
+
+import { test } from '../../__helpers/int/vitest.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+const clearMigrations = () => {
+  if (existsSync(path.resolve(dirname, 'migrations'))) {
+    rmSync(path.resolve(dirname, 'migrations'), { force: true, recursive: true })
+  }
+}
+
+test.suite('SQL migrations', { db: (adapter) => adapter === 'postgres' }, () => {
+  // If something fails - an error will be thrown.
+  test('should up and down migration successfully', async () => {
+    clearMigrations()
+
+    const { databaseAdapter } = await import(path.resolve(dirname, '../../databaseAdapter.js'))
+
+    const init = databaseAdapter.init
+
+    // set options
+    databaseAdapter.init = ({ payload }) => {
+      const adapter = init({ payload })
+      adapter.migrationDir = path.resolve(dirname, 'migrations')
+      adapter.push = false
+      return adapter
+    }
+
+    const config = await buildConfig({
+      db: databaseAdapter,
+      secret: 'secret',
+      collections: [
+        {
+          slug: 'users',
+          auth: true,
+          fields: [],
+          versions: false,
+        },
+      ],
+    })
+
+    const payload = await getPayload({ config })
+
+    await payload.db.createMigration({ payload })
+    await payload.db.migrate()
+    await payload.db.migrateDown()
+
+    await payload.db.dropDatabase({ adapter: payload.db })
+    await payload.destroy()
+  })
+})

@@ -1,0 +1,477 @@
+import type { FindOneArgs } from '../../database/types.js'
+import type {
+  JsonObject,
+  PayloadRequest,
+  PopulateType,
+  SelectType,
+  Where,
+} from '../../types/index.js'
+import type { Collection, TypeWithID } from '../config/types.js'
+import type { FindOptions } from './local/find.js'
+
+import { executeAccess } from '../../auth/executeAccess.js'
+import { hasWhereAccessResult } from '../../auth/types.js'
+import { combineQueries } from '../../database/combineQueries.js'
+import { APIError, Forbidden, NotFound } from '../../errors/index.js'
+import { afterChange } from '../../fields/hooks/afterChange/index.js'
+import { afterRead } from '../../fields/hooks/afterRead/index.js'
+import { beforeChange } from '../../fields/hooks/beforeChange/index.js'
+import { beforeValidate } from '../../fields/hooks/beforeValidate/index.js'
+import {
+  abortFileOperationScope,
+  beginFileOperationScope,
+  completeFileOperationScope,
+  shareFileOperationScope,
+} from '../../uploads/fileVersioning/fileOperationManager.js'
+import { runStoredFileRestore } from '../../uploads/fileVersioning/restore.js'
+import { restoreUploadDataFromDocument } from '../../uploads/sanitizeUploadData.js'
+import { assertNoValidationWrite } from '../../utilities/assertNoValidationWrite.js'
+import { commitTransaction } from '../../utilities/commitTransaction.js'
+import { deepCopyObjectSimple } from '../../utilities/deepCopyObject.js'
+import { hasDraftValidationEnabled } from '../../utilities/getVersionsConfig.js'
+import { httpStatus } from '../../utilities/httpStatus.js'
+import { initTransaction } from '../../utilities/initTransaction.js'
+import { isolateObjectProperty } from '../../utilities/isolateObjectProperty.js'
+import { killTransaction } from '../../utilities/killTransaction.js'
+import { resolveSelect } from '../../utilities/resolveSelect.js'
+import { sanitizeSelect } from '../../utilities/sanitizeSelect.js'
+import { getLatestCollectionVersion } from '../../versions/getLatestCollectionVersion.js'
+import { getRestoredStatusesToAuthorize } from '../../versions/getRestoredStatusesToAuthorize.js'
+import { saveVersion } from '../../versions/saveVersion.js'
+import { buildAfterOperation } from './utilities/buildAfterOperation.js'
+import { buildBeforeOperation } from './utilities/buildBeforeOperation.js'
+export type Arguments = {
+  collection: Collection
+  currentDepth?: number
+  depth?: number
+  disableErrors?: boolean
+  disableTransaction?: boolean
+  draft?: boolean
+  id: number | string
+  overrideAccess?: boolean
+  populate?: PopulateType
+  req: PayloadRequest
+  showHiddenFields?: boolean
+} & Pick<FindOptions<string, SelectType>, 'select'>
+
+export const restoreVersionOperation = async <
+  TData extends JsonObject & TypeWithID = JsonObject & TypeWithID,
+>(
+  args: Arguments,
+): Promise<TData> => {
+  assertNoValidationWrite(args.req)
+
+  const {
+    id,
+    collection: { config: collectionConfig },
+    depth,
+    draft: draftArg = false,
+    overrideAccess = false,
+    populate,
+    req,
+    req: { fallbackLocale, locale, payload },
+    select: incomingSelect,
+    showHiddenFields,
+  } = args
+  const hasFileOperationScope = Boolean(collectionConfig.upload)
+
+  if (hasFileOperationScope) {
+    beginFileOperationScope({ req })
+  }
+
+  try {
+    const shouldCommit = !args.disableTransaction && (await initTransaction(args.req))
+
+    // /////////////////////////////////////
+    // beforeOperation - Collection
+    // /////////////////////////////////////
+
+    args = await buildBeforeOperation({
+      args,
+      collection: args.collection.config,
+      operation: 'restoreVersion',
+      overrideAccess,
+    })
+
+    if (!id) {
+      throw new APIError('Missing ID of version to restore.', httpStatus.BAD_REQUEST)
+    }
+
+    // /////////////////////////////////////
+    // Retrieve original raw version
+    // /////////////////////////////////////
+
+    const { docs: versionDocs } = await req.payload.db.findVersions({
+      collection: collectionConfig.slug,
+      limit: 1,
+      locale: 'all',
+      pagination: false,
+      req,
+      where: { id: { equals: id } },
+    })
+
+    const [rawVersionToRestore] = versionDocs
+
+    if (!rawVersionToRestore) {
+      throw new NotFound(req.t)
+    }
+
+    const { parent: parentDocID } = rawVersionToRestore
+    const versionToRestoreWithLocales = rawVersionToRestore.version
+
+    // /////////////////////////////////////
+    // Access
+    // /////////////////////////////////////
+
+    const restoredStatuses = draftArg
+      ? ['draft']
+      : getRestoredStatusesToAuthorize(versionToRestoreWithLocales?._status)
+
+    // A localized `_status` can publish and unpublish locales in one restore, so authorize every
+    // status it writes. executeAccess throws Forbidden on the first denial; Where constraints are
+    // AND-combined into the lookup below.
+    const accessResultsList: Array<boolean | Where> = []
+
+    if (overrideAccess) {
+      accessResultsList.push(true)
+    } else {
+      const statusesToAuthorize = restoredStatuses.length > 0 ? restoredStatuses : [undefined]
+
+      for (const status of statusesToAuthorize) {
+        accessResultsList.push(
+          await executeAccess(
+            {
+              id: parentDocID,
+              slug: collectionConfig.slug,
+              data: { _status: status },
+              req,
+            },
+            collectionConfig.access.update,
+          ),
+        )
+      }
+    }
+
+    const hasWherePolicy = accessResultsList.some((result) => hasWhereAccessResult(result))
+
+    // /////////////////////////////////////
+    // Retrieve document
+    // /////////////////////////////////////
+
+    const findOneArgs: FindOneArgs = {
+      collection: collectionConfig.slug,
+      locale: 'all',
+      req,
+      where: accessResultsList.reduce<Where>((where, result) => combineQueries(where, result), {
+        id: { equals: parentDocID },
+      }),
+    }
+
+    // Get the document from the non versioned collection
+    const doc = await req.payload.db.findOne<TData>(findOneArgs)
+
+    if (!doc && !hasWherePolicy) {
+      throw new NotFound(req.t)
+    }
+    if (!doc && hasWherePolicy) {
+      throw new Forbidden(req.t)
+    }
+
+    if (collectionConfig.trash && doc?.deletedAt) {
+      throw new APIError(
+        `Cannot restore a version of a trashed document (ID: ${parentDocID}). Restore the document first.`,
+        httpStatus.FORBIDDEN,
+      )
+    }
+
+    if (collectionConfig.upload && !overrideAccess) {
+      await req.payload.findVersionByID({
+        id: String(id),
+        collection: collectionConfig.slug,
+        depth: 0,
+        overrideAccess: false,
+        req,
+      })
+    }
+
+    // /////////////////////////////////////
+    // fetch previousDoc
+    // /////////////////////////////////////
+    const prevDocWithLocales = await getLatestCollectionVersion({
+      id: parentDocID,
+      config: collectionConfig,
+      payload,
+      query: findOneArgs,
+      req,
+    })
+
+    // originalDoc with hoisted localized data
+    const validationLocale = payload.config.localization
+      ? payload.config.localization.defaultLocale
+      : locale!
+
+    const originalDoc = await afterRead({
+      collection: collectionConfig,
+      context: req.context,
+      depth: 0,
+      doc: deepCopyObjectSimple(prevDocWithLocales),
+      draft: draftArg,
+      fallbackLocale: null,
+      global: null,
+      locale: validationLocale,
+      overrideAccess: true,
+      req,
+      showHiddenFields: true,
+    })
+
+    // Use locale-hoisted version data for validation while preserving all locales in docWithLocales.
+    const prevVersionDoc = await afterRead({
+      collection: collectionConfig,
+      context: req.context,
+      depth: 0,
+      doc: deepCopyObjectSimple(rawVersionToRestore.version),
+      draft: draftArg,
+      fallbackLocale: null,
+      global: null,
+      locale: validationLocale,
+      overrideAccess: true,
+      req,
+      showHiddenFields: true,
+    })
+
+    // /////////////////////////////////////
+    // beforeValidate - Fields
+    // /////////////////////////////////////
+
+    req.context.isRestoringVersion = true
+
+    const reqWithValidationLocale = isolateObjectProperty(req, ['fallbackLocale', 'locale'])
+    shareFileOperationScope({ owner: req, req: reqWithValidationLocale })
+    reqWithValidationLocale.fallbackLocale = null
+    reqWithValidationLocale.locale = validationLocale
+
+    let data = await beforeValidate({
+      id: parentDocID,
+      collection: collectionConfig,
+      context: req.context,
+      data: deepCopyObjectSimple(prevVersionDoc),
+      doc: originalDoc,
+      global: null,
+      operation: 'update',
+      overrideAccess,
+      req: reqWithValidationLocale,
+    })
+
+    // /////////////////////////////////////
+    // beforeValidate - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.beforeValidate?.length) {
+      for (const hook of collectionConfig.hooks.beforeValidate) {
+        data =
+          (await hook({
+            collection: collectionConfig,
+            context: req.context,
+            data,
+            operation: 'update',
+            originalDoc,
+            req: reqWithValidationLocale,
+          })) || data
+      }
+    }
+
+    // /////////////////////////////////////
+    // beforeChange - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.beforeChange?.length) {
+      for (const hook of collectionConfig.hooks.beforeChange) {
+        data =
+          (await hook({
+            collection: collectionConfig,
+            context: req.context,
+            data,
+            operation: 'update',
+            originalDoc,
+            req: reqWithValidationLocale,
+          })) || data
+      }
+    }
+
+    // /////////////////////////////////////
+    // beforeChange - Fields
+    // /////////////////////////////////////
+
+    let result = await beforeChange({
+      id: parentDocID,
+      collection: collectionConfig,
+      context: req.context,
+      data: { ...data, id: parentDocID },
+      doc: originalDoc,
+      docWithLocales: versionToRestoreWithLocales,
+      global: null,
+      operation: 'update',
+      overrideAccess,
+      req: reqWithValidationLocale,
+      skipValidation: draftArg && !hasDraftValidationEnabled(collectionConfig),
+    })
+
+    // /////////////////////////////////////
+    // Update
+    // /////////////////////////////////////
+
+    const select = sanitizeSelect({
+      fields: collectionConfig.flattenedFields,
+      select: resolveSelect({
+        config: collectionConfig.select,
+        operation: 'restoreVersion',
+        req,
+        select: incomingSelect,
+      }),
+    })
+
+    // Ensure updatedAt date is always updated
+    result.updatedAt = new Date().toISOString()
+    // Ensure status respects restoreAsDraft arg
+    result._status = draftArg ? 'draft' : result._status
+    const writeRestoredVersion = async (restored: JsonObject) => {
+      if (collectionConfig.upload) {
+        result = restoreUploadDataFromDocument(result, restored, { clearMissing: true })
+      }
+      if (!draftArg) {
+        result = await req.payload.db.updateOne({
+          id: parentDocID,
+          collection: collectionConfig.slug,
+          data: result,
+          req: reqWithValidationLocale,
+          select,
+        })
+      }
+
+      const savedVersion = await saveVersion({
+        id: parentDocID,
+        autosave: false,
+        collection: collectionConfig,
+        docWithLocales: result,
+        draft: draftArg,
+        operation: 'restoreVersion',
+        payload,
+        req: reqWithValidationLocale,
+        select,
+      })
+      return savedVersion
+    }
+
+    result = collectionConfig.upload
+      ? await runStoredFileRestore({
+          id: parentDocID,
+          collection: collectionConfig,
+          current: prevDocWithLocales,
+          req,
+          selected: versionToRestoreWithLocales,
+          write: writeRestoredVersion,
+        })
+      : await writeRestoredVersion(versionToRestoreWithLocales)
+
+    // /////////////////////////////////////
+    // afterRead - Fields
+    // /////////////////////////////////////
+
+    result = await afterRead({
+      collection: collectionConfig,
+      context: req.context,
+      depth: depth!,
+      doc: result,
+      // @ts-expect-error - vestiges of when tsconfig was not strict. Feel free to improve
+      draft: undefined,
+      fallbackLocale: fallbackLocale!,
+      global: null,
+      locale: locale!,
+      overrideAccess,
+      populate,
+      req,
+      select,
+      showHiddenFields: showHiddenFields!,
+    })
+
+    // /////////////////////////////////////
+    // afterRead - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.afterRead?.length) {
+      for (const hook of collectionConfig.hooks.afterRead) {
+        result =
+          (await hook({
+            collection: collectionConfig,
+            context: req.context,
+            doc: result,
+            overrideAccess,
+            req,
+          })) || result
+      }
+    }
+
+    // /////////////////////////////////////
+    // afterChange - Fields
+    // /////////////////////////////////////
+
+    result = await afterChange({
+      collection: collectionConfig,
+      context: req.context,
+      data: result,
+      doc: result,
+      global: null,
+      operation: 'update',
+      previousDoc: prevDocWithLocales,
+      req,
+    })
+
+    // /////////////////////////////////////
+    // afterChange - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.afterChange?.length) {
+      for (const hook of collectionConfig.hooks.afterChange) {
+        result =
+          (await hook({
+            collection: collectionConfig,
+            context: req.context,
+            data: result,
+            doc: result,
+            operation: 'update',
+            overrideAccess,
+            previousDoc: prevDocWithLocales,
+            req,
+          })) || result
+      }
+    }
+
+    // /////////////////////////////////////
+    // afterOperation - Collection
+    // /////////////////////////////////////
+
+    result = await buildAfterOperation({
+      args,
+      collection: collectionConfig,
+      operation: 'restoreVersion',
+      overrideAccess,
+      result,
+    })
+
+    if (shouldCommit) {
+      await commitTransaction(req)
+    }
+
+    if (hasFileOperationScope) {
+      await completeFileOperationScope({ req })
+    }
+
+    return result
+  } catch (error: unknown) {
+    await killTransaction(req)
+    if (hasFileOperationScope) {
+      await abortFileOperationScope({ req })
+    }
+    throw error
+  }
+}

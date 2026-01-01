@@ -1,0 +1,221 @@
+import type { S3ClientConfig } from '@aws-sdk/client-s3'
+import type {
+  ClientUploadsConfig,
+  PluginOptions as CloudStoragePluginOptions,
+  CollectionOptions,
+} from '@payloadcms/plugin-cloud-storage/types'
+import type { NodeHttpHandlerOptions } from '@smithy/node-http-handler'
+import type { Config, StorageAdapter, UploadCollectionSlug } from 'payload'
+
+import { S3 } from '@aws-sdk/client-s3'
+import { cloudStoragePlugin } from '@payloadcms/plugin-cloud-storage'
+
+import type { SignedDownloadsConfig } from './getFile.js'
+
+import { createS3Adapter } from './adapter.js'
+
+export type S3StorageOptions = {
+  /**
+   * Access control list for uploaded files.
+   */
+  acl?: 'private' | 'public-read'
+
+  /**
+   * Bucket name to upload files to.
+   *
+   * Must follow [AWS S3 bucket naming conventions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html).
+   */
+
+  bucket: string
+
+  /**
+   * Optional cache key to identify the S3 storage client instance.
+   * If not provided, a default key will be used.
+   *
+   * @default `s3:containerName`
+   */
+  clientCacheKey?: string
+
+  /**
+   * Upload directly to S3 instead of through Payload. You must allow CORS PUT requests from your website.
+   */
+  clientUploads?: ClientUploadsConfig
+  /**
+   * Collection options to apply the S3 adapter to.
+   */
+  collections: Partial<
+    Record<
+      UploadCollectionSlug,
+      | ({
+          signedDownloads?: SignedDownloadsConfig
+        } & Omit<CollectionOptions, 'adapter'>)
+      | true
+    >
+  >
+  /**
+   * AWS S3 client configuration. Highly dependent on your AWS setup.
+   *
+   * [AWS.S3ClientConfig Docs](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/clients/client-s3/interfaces/s3clientconfig.html)
+   */
+  config: S3ClientConfig
+
+  /**
+   * Whether or not to disable local storage
+   *
+   * @default true
+   */
+  disableLocalStorage?: boolean
+
+  /**
+   * Whether or not to enable the plugin
+   *
+   * Default: true
+   */
+  enabled?: boolean
+  /**
+   * Use pre-signed URLs for files downloading. Can be overriden per-collection.
+   */
+  signedDownloads?: SignedDownloadsConfig
+  /**
+   * When true, the collection-level prefix and document-level prefix are combined
+   * (compositional). When false (default), a document prefix already within the
+   * collection prefix is used as-is for new uploads; otherwise it is nested beneath it.
+   * Existing files retain their stored prefixes for reads, URLs, and cleanup.
+   *
+   * Example with a document prefix already contained by the collection prefix:
+   * - collection prefix: `uploads/`
+   * - document prefix: `uploads/documents/`
+   * - resulting prefix with useCompositePrefixes=true: `uploads/uploads/documents/`
+   * - resulting prefix with useCompositePrefixes=false: `uploads/documents/`
+   *
+   * @default false
+   */
+  useCompositePrefixes?: boolean
+}
+
+type S3StorageFactory = (storageS3Args: S3StorageOptions) => StorageAdapter
+
+const s3Clients = new Map<string, S3>()
+
+const defaultRequestHandlerOpts: NodeHttpHandlerOptions = {
+  httpAgent: {
+    keepAlive: true,
+    maxSockets: 100,
+  },
+  httpsAgent: {
+    keepAlive: true,
+    maxSockets: 100,
+  },
+}
+
+export const s3Storage: S3StorageFactory = (
+  s3StorageOptions: S3StorageOptions,
+): StorageAdapter => ({
+  name: 's3',
+  collections: Object.keys(s3StorageOptions.collections),
+  init: (incomingConfig: Config): Config => {
+    const cacheKey = s3StorageOptions.clientCacheKey || `s3:${s3StorageOptions.bucket}`
+
+    const isPluginDisabled = s3StorageOptions.enabled === false
+
+    const getStorageClient: () => S3 = () => {
+      if (s3Clients.has(cacheKey)) {
+        return s3Clients.get(cacheKey)!
+      }
+
+      s3Clients.set(
+        cacheKey,
+        new S3({
+          requestHandler: defaultRequestHandlerOpts,
+          ...(s3StorageOptions.config ?? {}),
+        }),
+      )
+
+      return s3Clients.get(cacheKey)!
+    }
+
+    if (isPluginDisabled) {
+      // Still call cloudStoragePlugin with adapter: null so fields (like prefix) are
+      // inserted into the schema, keeping it consistent across environments.
+      const collectionsWithoutAdapter: CloudStoragePluginOptions['collections'] = Object.entries(
+        s3StorageOptions.collections,
+      ).reduce(
+        (acc, [slug, collOptions]) => ({
+          ...acc,
+          [slug]: {
+            ...(collOptions === true ? {} : collOptions),
+            adapter: null,
+          },
+        }),
+        {} as Record<string, CollectionOptions>,
+      )
+
+      return cloudStoragePlugin({
+        collections: collectionsWithoutAdapter,
+        enabled: false,
+        useCompositePrefixes: s3StorageOptions.useCompositePrefixes,
+      })(incomingConfig)
+    }
+
+    // Determine signedDownloads for this collection
+    const resolveSignedDownloads = (slug: string): SignedDownloadsConfig => {
+      const collectionStorageConfig = s3StorageOptions.collections[slug]
+
+      let signedDownloads: null | SignedDownloadsConfig =
+        typeof collectionStorageConfig === 'object'
+          ? (collectionStorageConfig.signedDownloads ?? false)
+          : null
+
+      if (signedDownloads === null) {
+        signedDownloads = s3StorageOptions.signedDownloads ?? false
+      }
+
+      return signedDownloads
+    }
+
+    // Add adapter to each collection option object
+    const collectionsWithAdapter: CloudStoragePluginOptions['collections'] = Object.entries(
+      s3StorageOptions.collections,
+    ).reduce(
+      (acc, [slug, collOptions]) => ({
+        ...acc,
+        [slug]: {
+          ...(collOptions === true ? {} : collOptions),
+          adapter: createS3Adapter({
+            acl: s3StorageOptions.acl,
+            bucket: s3StorageOptions.bucket,
+            clientUploads: s3StorageOptions.clientUploads,
+            config: s3StorageOptions.config,
+            getStorageClient,
+            signedDownloads: resolveSignedDownloads(slug),
+            useCompositePrefixes: s3StorageOptions.useCompositePrefixes,
+          }),
+        },
+      }),
+      {} as Record<string, CollectionOptions>,
+    )
+
+    // Set disableLocalStorage: true for collections specified in the plugin options
+    const config = {
+      ...incomingConfig,
+      collections: (incomingConfig.collections || []).map((collection) => {
+        if (!collectionsWithAdapter[collection.slug]) {
+          return collection
+        }
+
+        return {
+          ...collection,
+          upload: {
+            ...(typeof collection.upload === 'object' ? collection.upload : {}),
+            disableLocalStorage: true,
+          },
+        }
+      }),
+    }
+
+    return cloudStoragePlugin({
+      collections: collectionsWithAdapter,
+      useCompositePrefixes: s3StorageOptions.useCompositePrefixes,
+    })(config)
+  },
+})

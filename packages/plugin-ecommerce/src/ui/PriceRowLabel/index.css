@@ -1,0 +1,13 @@
+@layer payload-default {
+  .priceRowLabel {
+    display: flex;
+    align-items: center;
+    gap: var(--spacer-3);
+  }
+
+  .priceValue {
+    display: flex;
+    align-items: center;
+    gap: var(--spacer-1);
+  }
+}

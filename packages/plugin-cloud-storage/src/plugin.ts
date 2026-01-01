@@ -1,0 +1,280 @@
+import type { Config } from 'payload'
+
+import type { Adapter, AllowList, PluginOptions } from './types.js'
+
+import { getFields } from './fields/getFields.js'
+import { getAfterChangeHook } from './hooks/afterChange.js'
+import { getAfterDeleteHook } from './hooks/afterDelete.js'
+import { getNormalizeUploadPrefixHook } from './hooks/normalizeUploadPrefix.js'
+import { getPreserveFileDataHook } from './hooks/preserveFileData.js'
+import { getPublicOriginalURLHook } from './hooks/publicOriginalURL.js'
+import { createFileOperations } from './utilities/createFileOperations.js'
+import { getStorageLocationSelect } from './utilities/getStorageLocationSelect.js'
+
+// This plugin extends all targeted collections by offloading uploaded files
+// to cloud storage instead of solely storing files locally.
+
+// It is based on an adapter approach, where adapters can be written for any cloud provider.
+// Adapters are responsible for providing four actions that this plugin will use:
+// 1. handleUpload, 2. handleDelete, 3. generateURL, 4. staticHandler
+
+// Optionally, the adapter can specify any Webpack config overrides if they are necessary.
+
+export const cloudStoragePlugin =
+  (pluginOptions: PluginOptions) =>
+  (incomingConfig: Config): Config => {
+    const { collections: allCollectionOptions, enabled, useCompositePrefixes } = pluginOptions
+    const config = { ...incomingConfig }
+
+    // If disabled, only insert fields (e.g. prefix) without full plugin functionality,
+    // so the collection schema stays consistent across environments.
+    if (enabled === false) {
+      return {
+        ...config,
+        collections: (config.collections || []).map((existingCollection) => {
+          const options = allCollectionOptions[existingCollection.slug]
+
+          if (options) {
+            // If adapter is provided, use it to get fields
+            const adapter = options.adapter
+              ? options.adapter({
+                  collection: existingCollection,
+                  prefix: options.prefix,
+                })
+              : undefined
+
+            const fields = getFields({
+              adapter,
+              collection: existingCollection,
+              disablePayloadAccessControl: options.disablePayloadAccessControl,
+              generateFileURL: options.generateFileURL,
+              prefix: options.prefix,
+              useCompositePrefixes,
+            })
+
+            return {
+              ...existingCollection,
+              fields,
+            }
+          }
+
+          return existingCollection
+        }),
+      }
+    }
+
+    const initFunctions: Array<() => Promise<void> | void> = []
+    const endpointPaths = new Map<Adapter, string>()
+
+    const collections = (config.collections || []).map((existingCollection) => {
+      const options = allCollectionOptions[existingCollection.slug]
+
+      if (options?.adapter) {
+        const adapter = options.adapter({
+          collection: existingCollection,
+          prefix: options.prefix,
+        })
+
+        if (adapter.onInit) {
+          initFunctions.push(adapter.onInit)
+        }
+
+        let uploadInstructions
+
+        if (adapter.uploadInstructions) {
+          const { adminHandler, enabled, endpoint, ...instructions } = adapter.uploadInstructions
+          let endpointPath = endpointPaths.get(options.adapter)
+
+          if (enabled && endpoint && !endpointPath) {
+            const endpointCount =
+              config.endpoints?.filter(({ path }) => path?.startsWith(endpoint.path)).length || 0
+
+            endpointPath = endpointCount ? `${endpoint.path}-${endpointCount}` : endpoint.path
+            config.endpoints ??= []
+            config.endpoints.push({
+              handler: endpoint.handler,
+              method: 'post',
+              path: endpointPath,
+            })
+            endpointPaths.set(options.adapter, endpointPath)
+          }
+
+          if (enabled && adminHandler) {
+            config.admin ??= {}
+            config.admin.components ??= {}
+            config.admin.components.providers ??= []
+            config.admin.components.providers.push({
+              clientProps: {
+                collectionSlug: existingCollection.slug,
+                endpointPath,
+                prefix: options.prefix,
+                props: adminHandler.props || {},
+              },
+              path: adminHandler.path,
+            })
+          }
+
+          if (enabled) {
+            uploadInstructions = instructions
+          } else if (adminHandler) {
+            /** Avoid importMap.js differences when client uploads vary between dev and production. */
+            config.admin ??= {}
+            config.admin.dependencies ??= {}
+            config.admin.dependencies[adminHandler.path] = {
+              type: 'component',
+              path: adminHandler.path,
+            }
+          }
+        }
+
+        const fields = getFields({
+          adapter,
+          collection: existingCollection,
+          disablePayloadAccessControl: options.disablePayloadAccessControl,
+          generateFileURL: options.generateFileURL,
+          prefix: options.prefix,
+          useCompositePrefixes,
+        })
+
+        const handlers = [
+          ...(typeof existingCollection.upload === 'object' &&
+          Array.isArray(existingCollection.upload.handlers)
+            ? existingCollection.upload.handlers
+            : []),
+        ]
+
+        if (!options.disablePayloadAccessControl) {
+          handlers.push(adapter.staticHandler)
+          // Public files still need a server path when Payload reads them for a transform.
+        } else {
+          handlers.push((req, args) => {
+            if ('uploadReference' in args.params || args.params.operation === 'transform') {
+              return adapter.staticHandler(req, args)
+            }
+          })
+        }
+
+        const getSkipSafeFetchSetting = (): AllowList | boolean => {
+          const isBooleanTrueSkipSafeFetch =
+            typeof existingCollection.upload === 'object' &&
+            existingCollection.upload.skipSafeFetch === true
+
+          const isAllowListSkipSafeFetch =
+            typeof existingCollection.upload === 'object' &&
+            Array.isArray(existingCollection.upload.skipSafeFetch)
+
+          if (isBooleanTrueSkipSafeFetch) {
+            return true
+          } else if (isAllowListSkipSafeFetch) {
+            const existingSkipSafeFetch =
+              typeof existingCollection.upload === 'object' &&
+              Array.isArray(existingCollection.upload.skipSafeFetch)
+                ? existingCollection.upload.skipSafeFetch
+                : []
+
+            const hasExactLocalhostMatch = existingSkipSafeFetch.some((entry) => {
+              const entryKeys = Object.keys(entry)
+              return entryKeys.length === 1 && entry.hostname === 'localhost'
+            })
+
+            const localhostEntry =
+              process.env.NODE_ENV !== 'production' && !hasExactLocalhostMatch
+                ? [{ hostname: 'localhost' }]
+                : []
+
+            return [...existingSkipSafeFetch, ...localhostEntry]
+          }
+
+          if (process.env.NODE_ENV !== 'production') {
+            return [{ hostname: 'localhost' }]
+          }
+
+          return false
+        }
+
+        return {
+          ...existingCollection,
+          fields,
+          hooks: {
+            ...(existingCollection.hooks || {}),
+            afterChange: [
+              ...(existingCollection.hooks?.afterChange || []),
+              getAfterChangeHook({
+                adapter,
+                collection: existingCollection,
+                collectionPrefix: options.prefix,
+                disablePayloadAccessControl: options.disablePayloadAccessControl,
+                hasCustomFileURL: Boolean(options.generateFileURL),
+                useCompositePrefixes,
+              }),
+            ],
+            afterDelete: [
+              ...(existingCollection.hooks?.afterDelete || []),
+              getAfterDeleteHook({
+                adapter,
+                collection: existingCollection,
+                collectionPrefix: options.prefix,
+                useCompositePrefixes,
+              }),
+            ],
+            afterRead: [
+              ...(existingCollection.hooks?.afterRead || []),
+              ...(options.disablePayloadAccessControl &&
+              (options.generateFileURL || adapter.generateURL)
+                ? [
+                    getPublicOriginalURLHook({
+                      adapter,
+                      collection: existingCollection,
+                      generateFileURL: options.generateFileURL,
+                    }),
+                  ]
+                : []),
+            ],
+            beforeChange: [
+              ...(existingCollection.hooks?.beforeChange || []),
+              getNormalizeUploadPrefixHook({
+                collectionPrefix: options.prefix,
+                useCompositePrefixes,
+              }),
+              getPreserveFileDataHook(),
+            ],
+          },
+          select: getStorageLocationSelect({ select: existingCollection.select }),
+          upload: {
+            ...(typeof existingCollection.upload === 'object' ? existingCollection.upload : {}),
+            adapter: adapter.name,
+            fileOperations: createFileOperations({
+              adapter,
+              collection: existingCollection,
+              collectionPrefix: options.prefix,
+              disablePayloadAccessControl: options.disablePayloadAccessControl,
+              generateFileURL: options.generateFileURL,
+              useCompositePrefixes,
+            }),
+            ...(uploadInstructions && {
+              uploadInstructions,
+            }),
+            disableLocalStorage:
+              typeof options.disableLocalStorage === 'boolean' ? options.disableLocalStorage : true,
+            handlers,
+            skipSafeFetch: getSkipSafeFetchSetting(),
+          },
+        }
+      }
+
+      return existingCollection
+    })
+
+    return {
+      ...config,
+      collections,
+      onInit: async (payload) => {
+        // Await each init so a provisioning failure fails Payload startup
+        // instead of becoming an unhandled rejection.
+        await Promise.all(initFunctions.map((fn) => fn()))
+        if (config.onInit) {
+          await config.onInit(payload)
+        }
+      },
+    }
+  }

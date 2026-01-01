@@ -1,0 +1,169 @@
+import type { BrowserContext, Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import * as path from 'path'
+import { fileURLToPath } from 'url'
+
+import { login } from '../__helpers/e2e/auth/login.js'
+import {
+  saveDocAndAssert,
+  // throttleTest,
+} from '../__helpers/e2e/helpers.js'
+import { openNav } from '../__helpers/e2e/toggleNav.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { adminRoute } from './shared.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+let context: BrowserContext
+
+test.describe('Admin Panel (Root)', () => {
+  // The tanstack-start adapter's file-based router currently mounts the admin
+  // under a fixed `/admin/*` route, so configs that move the admin to the
+  // site root (`admin: '/'`) cannot be served by `app-tanstack`. Skip the
+  // entire suite for tanstack-start until the router supports a configurable
+  // admin mount point.
+  test.skip(
+    process.env.PAYLOAD_FRAMEWORK === 'tanstack-start',
+    'tanstack-start does not yet support a custom admin route at the site root',
+  )
+
+  let page: Page
+  let url: AdminUrlUtil
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+
+    const { serverURL } = await initPayloadE2ENoConfig({ dirname })
+    url = new AdminUrlUtil(serverURL, 'posts', {
+      admin: adminRoute,
+    })
+
+    context = await browser.newContext()
+    ;({ page } = await initPage({
+      context,
+      customRoutes: {
+        admin: adminRoute,
+      },
+      noAutoLogin: true,
+      serverURL,
+    }))
+
+    await login({ customRoutes: { admin: adminRoute }, page, serverURL })
+
+    await ensureCompilationIsDone({
+      customRoutes: {
+        admin: adminRoute,
+      },
+      page,
+      serverURL,
+    })
+  })
+
+  test('should redirect `${adminRoute}/collections` to `${adminRoute}', async () => {
+    const collectionsURL = `${url.admin}/collections`
+    await page.goto(collectionsURL)
+    // Should redirect to dashboard
+    await expect.poll(() => page.url()).toBe(`${url.admin}`)
+  })
+
+  test('renders admin panel at root', async () => {
+    await page.goto(url.admin)
+    const pageURL = page.url()
+    expect(pageURL).toBe(url.admin)
+    expect(pageURL).not.toContain('/admin')
+  })
+
+  test('collection — navigates to list view', async () => {
+    await page.goto(url.list)
+    const pageURL = page.url()
+    expect(pageURL).toContain(url.list)
+    expect(pageURL).not.toContain('/admin')
+  })
+
+  test('collection — renders versions list', async () => {
+    await page.goto(url.create)
+    const textField = page.locator('#field-text')
+    await textField.fill('test')
+    await saveDocAndAssert(page)
+
+    const versionsTab = page.locator('a.doc-tab[href$="/versions"]')
+    await versionsTab.click()
+    const firstRow = page.locator('tbody .row-1')
+    await expect(firstRow).toBeVisible()
+  })
+
+  test('collection - should hide Copy To Locale button when localization is false', async () => {
+    await page.goto(url.create)
+    const textField = page.locator('#field-text')
+    await textField.fill('test')
+    await saveDocAndAssert(page)
+    await page.locator('.doc-controls__popup .popup__trigger-wrap button').click()
+    await expect(page.locator('#copy-locale-data__button')).toBeHidden()
+  })
+
+  test('global — navigates to edit view', async () => {
+    await page.goto(url.global('menu'))
+    const pageURL = page.url()
+    expect(pageURL).toBe(url.global('menu'))
+    expect(pageURL).not.toContain('/admin')
+  })
+
+  test('global — renders versions list', async () => {
+    await page.goto(url.global('menu'))
+    const textField = page.locator('#field-globalText')
+    await textField.fill('updated global text')
+    await saveDocAndAssert(page)
+
+    await page.goto(`${url.global('menu')}/versions`)
+    const firstRow = page.locator('tbody .row-1')
+    await expect(firstRow).toBeVisible()
+  })
+
+  test('ui - should render default payload favicons', async () => {
+    await page.goto(url.admin)
+    const favicons = page.locator('link[rel="icon"][type="image/png"]')
+    await expect(favicons).toHaveCount(2)
+    await expect(favicons.nth(0)).toHaveAttribute('sizes', '32x32')
+    await expect(favicons.nth(1)).toHaveAttribute('sizes', '32x32')
+    await expect(favicons.nth(1)).toHaveAttribute('media', '(prefers-color-scheme: dark)')
+    await expect(favicons.nth(1)).toHaveAttribute('href', /\/payload-favicon-light\.[a-z\d_]+\.png/)
+  })
+
+  test('config.admin.theme should restrict the theme', async () => {
+    await page.goto(url.account)
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(page.locator('#field-theme')).toBeHidden()
+    await expect(page.locator('#field-theme-auto')).toBeHidden()
+  })
+
+  test('ignores the ?theme= param when config.admin.theme restricts the theme', async () => {
+    await page.goto(`${url.account}?theme=light`)
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  })
+
+  test('should mount custom root views', async () => {
+    await page.goto(`${url.admin}/custom-view`)
+    await expect(page.locator('#custom-view')).toBeVisible()
+  })
+
+  test('should close modal on route change', async () => {
+    await page.goto(url.create)
+    const textField = page.locator('#field-text')
+    await textField.fill('updated')
+    await openNav(page)
+    await page.getByRole('button', { name: /^Account(?::|$)/ }).click()
+    const profileLink = page.locator('a.user-menu__profile')
+    await expect(profileLink).toBeVisible()
+    await profileLink.click()
+    const modal = page.locator('div.payload__modal-container')
+    await expect(modal).toBeVisible()
+
+    await page.goBack()
+    await expect(modal).toBeHidden()
+  })
+})

@@ -1,0 +1,385 @@
+import type { BrowserContext, Locator, Page, Route } from '@playwright/test'
+
+import { expect } from '@playwright/test'
+import { addDefaultsToConfig, type Config, type SanitizedConfig } from 'payload'
+import { wait } from 'payload/shared'
+import { setTimeout } from 'timers/promises'
+
+import { POLL_TOPASS_TIMEOUT } from '../../playwright.config.js'
+
+export type AdminRoutes = NonNullable<NonNullable<Config['admin']>['routes']>
+
+const random = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min
+
+const networkConditions = {
+  'Fast 3G': {
+    download: ((1.6 * 1000 * 1000) / 8) * 0.9,
+    latency: 1000,
+    upload: ((750 * 1000) / 8) * 0.9,
+  },
+  'Fast 4G': {
+    download: ((20 * 1000 * 1000) / 8) * 0.8,
+    latency: 1000,
+    upload: ((10 * 1000 * 1000) / 8) * 0.8,
+  },
+  None: {
+    download: 0,
+    latency: -1,
+    upload: -1,
+  },
+  'Slow 3G': {
+    download: ((500 * 1000) / 8) * 0.8,
+    latency: 2500,
+    upload: ((500 * 1000) / 8) * 0.8,
+  },
+  'Slow 4G': {
+    download: ((4 * 1000 * 1000) / 8) * 0.8,
+    latency: 1000,
+    upload: ((3 * 1000 * 1000) / 8) * 0.8,
+  },
+}
+
+/**
+ * CPU throttling & 2 different kinds of network throttling.
+ *
+ * Returns a function that removes all throttling again. Call it once the throttled steps are done,
+ * otherwise every later test that shares the page runs throttled as well.
+ */
+export async function throttleTest({
+  context,
+  delay,
+  page,
+}: {
+  context: BrowserContext
+  delay: keyof typeof networkConditions
+  page: Page
+}): Promise<() => Promise<void>> {
+  const cdpSession = await context.newCDPSession(page)
+
+  await cdpSession.send('Network.emulateNetworkConditions', {
+    downloadThroughput: networkConditions[delay].download,
+    latency: networkConditions[delay].latency,
+    offline: false,
+    uploadThroughput: networkConditions[delay].upload,
+  })
+
+  const delayRequest = async (route: Route) => {
+    await setTimeout(random(500, 1000))
+    // Not `route.continue()`: requests still being delayed when throttling stops are continued by
+    // Playwright itself once the route is removed, and continuing them again would throw.
+    await route.fallback()
+  }
+
+  await page.route('**/*', delayRequest)
+
+  await cdpSession.send('Emulation.setCPUThrottlingRate', { rate: 8 }) // 8x slowdown
+
+  return async () => {
+    await page.unroute('**/*', delayRequest)
+
+    await cdpSession.send('Network.emulateNetworkConditions', {
+      downloadThroughput: -1,
+      latency: 0,
+      offline: false,
+      uploadThroughput: -1,
+    })
+
+    await cdpSession.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+
+    await cdpSession.detach()
+  }
+}
+
+export async function saveDocHotkeyAndAssert(page: Page): Promise<void> {
+  const ua = page.evaluate(() => navigator.userAgent)
+  const isMac = (await ua).includes('Mac OS X')
+  if (isMac) {
+    await page.keyboard.down('Meta')
+  } else {
+    await page.keyboard.down('Control')
+  }
+  await page.keyboard.press('s')
+  if (isMac) {
+    await page.keyboard.up('Meta')
+  } else {
+    await page.keyboard.up('Control')
+  }
+  await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+  await closeAllToasts(page)
+}
+
+export async function saveDocAndAssert(
+  page: Page,
+  selector:
+    | '#action-publish'
+    | '#action-save'
+    | '#action-save-draft'
+    | '#publish-all-locales'
+    | string = '#action-save',
+  expectation: 'error' | 'success' = 'success',
+  options?: {
+    /**
+     * If true, the all toasts will not be dismissed after the save operation.
+     */
+    disableDismissAllToasts?: boolean
+  },
+): Promise<void> {
+  await wait(500) // TODO: Fix this
+  if (selector === '#publish-all-locales') {
+    // open dropdown
+    const chevronButton = page.locator('.form-submit .popup__trigger-wrap > .popup-button')
+    await chevronButton.click()
+  }
+  await page.click(selector, { delay: 100 })
+
+  if (expectation === 'success') {
+    await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+    await expect.poll(() => page.url(), { timeout: POLL_TOPASS_TIMEOUT }).not.toContain('/create')
+  } else {
+    await expect(page.locator('.payload-toast-container .toast-error')).toBeVisible()
+  }
+
+  // Close all toasts to prevent them from interfering with subsequent tests. E.g. the following could happen
+  // 1. saveDocAndAssert
+  // 2. some operation
+  // 3. second saveDocAndAssert
+  // 4. the first toast is still visible => the second saveDocAndAssert will pass even though the save is not finished yet (or even not successful!)
+  if (!options?.disableDismissAllToasts) {
+    await closeAllToasts(page)
+  }
+}
+
+export async function closeAllToasts(page: Locator | Page): Promise<void> {
+  const toastCloseSelector = '.payload-toast-container button.payload-toast-close-button'
+  const closeButtons = page.locator(toastCloseSelector)
+
+  while (true) {
+    const count = await closeButtons.count()
+
+    if (count === 0) {
+      break
+    }
+
+    await closeButtons.first().dispatchEvent('click')
+    await expect.poll(() => closeButtons.count()).toBeLessThan(count)
+  }
+}
+
+export async function openDocDrawer(page: Page, selector: string): Promise<void> {
+  await wait(500) // wait for parent form state to initialize
+  await page.locator(selector).click()
+  await wait(500) // wait for drawer form state to initialize
+}
+
+export async function openCreateDocDrawer(page: Page, fieldSelector: string): Promise<void> {
+  await wait(500) // wait for parent form state to initialize
+  const relationshipField = page.locator(fieldSelector)
+  await expect(relationshipField.locator('input')).toBeEnabled()
+  const addNewButton = relationshipField.locator('.relationship-add-new__add-button')
+  await expect(addNewButton).toBeVisible()
+  await addNewButton.click()
+  await wait(500) // wait for drawer form state to initialize
+}
+
+export async function openLocaleSelector(page: Page): Promise<void> {
+  const button = page.locator('.localizer .popup__trigger-wrap > button')
+  const popup = page.locator('.popup__content')
+
+  if (!(await popup.isVisible())) {
+    await button.click()
+    await expect(popup).toBeVisible()
+  }
+}
+
+export async function closeLocaleSelector(page: Page): Promise<void> {
+  const popup = page.locator('.popup__content')
+
+  if (await popup.isVisible()) {
+    await page.click('body', { position: { x: 0, y: 0 } })
+    await expect(popup).toBeHidden()
+  }
+}
+
+export async function changeLocale(page: Page, newLocale: string) {
+  await openLocaleSelector(page)
+
+  const selectedLocale = await page
+    .locator(`.popup__content .popup-button-list__button--selected [data-locale]`)
+    .getAttribute('data-locale')
+
+  if (selectedLocale !== newLocale) {
+    const localeButton = page
+      .locator('.popup__content .popup-button-list__button')
+      .filter({ has: page.locator(`[data-locale="${newLocale}"]`) })
+
+    await expect(async () => await expect(localeButton).toBeEnabled()).toPass({
+      timeout: POLL_TOPASS_TIMEOUT,
+    })
+
+    await localeButton.click()
+
+    const regexPattern = new RegExp(`locale=${newLocale}`)
+
+    await expect(page).toHaveURL(regexPattern)
+
+    // Wait for form to finish re-initializing after locale change.
+    // When locale changes, the form fetches new data asynchronously.
+    // The Form exposes a data-form-ready attribute that indicates initialization is complete.
+    await waitForFormReady(page)
+  }
+
+  await closeLocaleSelector(page)
+}
+
+export async function waitForFormReady(page: Page) {
+  await expect
+    .poll(async () => (await page.locator('[data-form-ready="false"]').count()) === 0, {
+      timeout: POLL_TOPASS_TIMEOUT,
+    })
+    .toBe(true)
+}
+
+/**
+ * Wait until a Lexical editor within the given locator is fully interactive.
+ * Checks for `contenteditable="true"` on the Lexical root element, which is only
+ * present after React has hydrated, Lexical has initialized, and the editor is editable.
+ */
+export async function waitForLexicalReady(locator: Locator) {
+  await expect(
+    locator
+      .locator('> .rich-text-lexical__wrap [data-lexical-editor="true"][contenteditable="true"]')
+      .first(),
+  ).toBeVisible()
+}
+
+/**
+ * Navigate to a document page and wait for the form to be ready before interacting.
+ * Necessary because TanStack Start's hydration is asynchronous, and interacting
+ * with form inputs (e.g. setInputFiles) before hydration completes will silently
+ * fail since React event handlers are not yet attached.
+ */
+export async function gotoAndWaitForForm(page: Page, url: string) {
+  await page.goto(url)
+  await waitForFormReady(page)
+}
+
+export function exactText(text: string) {
+  return new RegExp(`^${text}$`)
+}
+
+export const checkPageTitle = async (page: Page, title: string) => {
+  await expect
+    .poll(async () => await page.locator('.doc-header__title.render-title')?.first()?.innerText(), {
+      timeout: POLL_TOPASS_TIMEOUT,
+    })
+    .toBe(title)
+}
+
+export const checkBreadcrumb = async (page: Page, text: string) => {
+  await expect
+    .poll(
+      async () => await page.locator('.step-nav.app-header__step-nav .step-nav__last')?.innerText(),
+      {
+        timeout: POLL_TOPASS_TIMEOUT,
+      },
+    )
+    .toBe(text)
+}
+
+export const selectTableRow = async (scope: Locator | Page, title: string): Promise<void> => {
+  const selector = `tbody tr:has-text("${title}") .select-row__checkbox input[type=checkbox]`
+  await scope.locator(selector).check()
+  await expect(scope.locator(selector)).toBeChecked()
+}
+
+export const findTableCell = async (
+  page: Page,
+  fieldName: string,
+  rowTitle?: string,
+): Promise<Locator> => {
+  const parentEl = rowTitle ? await findTableRow(page, rowTitle) : page.locator('tbody tr')
+  const cell = parentEl.locator(`td.cell-${fieldName}`)
+  await expect(cell).toBeVisible()
+  return cell
+}
+
+export const findTableRow = async (page: Page, title: string): Promise<Locator> => {
+  const row = page.locator(`tbody tr:has-text("${title}")`)
+  await expect(row).toBeVisible()
+  return row
+}
+
+export async function switchTab(page: Page, selector: string) {
+  const activeSelector = `${selector}.tabs-field__tab-button--active`
+
+  await expect(async () => {
+    await page.locator(selector).click()
+    await expect(page.locator(activeSelector)).toBeVisible({ timeout: 1000 })
+  }).toPass({ intervals: [300], timeout: 6000 })
+}
+
+export const openColumnControls = async (page: Page) => {
+  const columnSelector = page.locator('.popup__content .column-selector')
+  await expect(async () => {
+    if (!(await columnSelector.isVisible())) {
+      await page.locator('.columns-button__button').click()
+    }
+    await expect(columnSelector).toBeVisible({ timeout: 1500 })
+  }).toPass({ timeout: 18000 })
+}
+
+export function getRoutes({
+  customAdminRoutes,
+  customRoutes,
+}: {
+  customAdminRoutes?: AdminRoutes
+  customRoutes?: Config['routes']
+}): {
+  admin: {
+    routes: AdminRoutes
+  }
+  routes: NonNullable<SanitizedConfig['routes']>
+} {
+  const defaults = addDefaultsToConfig({
+    db: { defaultIDType: 'text', init: () => ({}) as any },
+    secret: '',
+  })
+  let routes = defaults.routes
+  let adminRoutes = defaults.admin?.routes
+
+  if (customAdminRoutes) {
+    adminRoutes = {
+      ...adminRoutes,
+      ...customAdminRoutes,
+    }
+  }
+
+  if (customRoutes) {
+    routes = {
+      ...routes,
+      ...customRoutes,
+    }
+  }
+
+  return {
+    admin: {
+      routes: adminRoutes,
+    },
+    routes,
+  }
+}
+
+type RunJobsQueueArgs = {
+  queue?: string
+  serverURL: string
+}
+
+export async function runJobsQueue(args: RunJobsQueueArgs) {
+  const { serverURL } = args
+  const queue = args?.queue ?? 'default'
+
+  return await fetch(`${serverURL}/api/payload-jobs/run?queue=${queue}`, {
+    credentials: 'include',
+    method: 'get',
+  })
+}

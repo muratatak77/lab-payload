@@ -1,0 +1,120 @@
+import type { UpdateJobsArgs } from '../../database/types.js'
+import type { Job } from '../../index.js'
+import type { PayloadRequest, Sort, Where } from '../../types/index.js'
+
+import { assertNoValidationWrite } from '../../utilities/assertNoValidationWrite.js'
+import { jobAfterRead } from '../config/collection.js'
+import { getCurrentDate } from './getCurrentDate.js'
+
+type BaseArgs = {
+  data: Partial<Job>
+  limit?: number
+  req: PayloadRequest
+  returning?: boolean
+}
+
+type ArgsByID = {
+  id: number | string
+  limit?: never
+  sort?: never
+  where?: never
+}
+
+type ArgsWhere = {
+  id?: never
+  limit?: number
+  sort?: Sort
+  where: Where
+}
+
+type RunJobsArgs = (ArgsByID | ArgsWhere) & BaseArgs
+
+/**
+ * Convenience method for updateJobs by id
+ */
+export async function updateJob(args: ArgsByID & BaseArgs) {
+  const result = await updateJobs(args)
+  if (result) {
+    return result[0]
+  }
+}
+
+/**
+ * Helper for updating jobs in the most performant way possible.
+ * Handles deciding whether it can used direct db methods or not, and if so,
+ * manually runs the afterRead hook that populates the `taskStatus` property.
+ */
+export async function updateJobs({
+  id,
+  data,
+  limit: limitArg,
+  req,
+  returning,
+  sort,
+  where: whereArg,
+}: RunJobsArgs): Promise<Job[] | null> {
+  assertNoValidationWrite(req)
+
+  const limit = id ? 1 : limitArg
+  const where = id ? { id: { equals: id } } : whereArg
+
+  const transactionID =
+    req.payload.db.name !== 'mongoose' ? await req.payload.db.beginTransaction() : undefined
+  const jobReq = { transactionID: transactionID ?? undefined }
+
+  if (data.processingUntil === null) {
+    data.processingToken = null
+  }
+
+  if (typeof data.updatedAt === 'undefined') {
+    // Ensure updatedAt date is always updated
+    data.updatedAt = getCurrentDate().toISOString()
+  }
+
+  const args: UpdateJobsArgs = id
+    ? {
+        id,
+        data,
+        req: jobReq,
+        returning,
+      }
+    : {
+        data,
+        limit,
+        req: jobReq,
+        returning,
+        sort,
+        where: where as Where,
+      }
+
+  let updatedJobs: Job[] | null
+
+  try {
+    updatedJobs = await req.payload.db.updateJobs(args)
+
+    if (transactionID !== null && typeof transactionID !== 'undefined') {
+      await req.payload.db.commitTransaction(transactionID)
+    }
+  } catch (error) {
+    if (transactionID !== null && typeof transactionID !== 'undefined') {
+      try {
+        await req.payload.db.rollbackTransaction(transactionID)
+      } catch {
+        // Preserve the update or commit error that caused the rollback.
+      }
+    }
+
+    throw error
+  }
+
+  if (returning === false || !updatedJobs?.length) {
+    return null
+  }
+
+  return updatedJobs.map((updatedJob) => {
+    return jobAfterRead({
+      config: req.payload.config,
+      doc: updatedJob,
+    })
+  })
+}

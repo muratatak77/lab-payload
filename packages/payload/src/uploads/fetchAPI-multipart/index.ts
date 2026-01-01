@@ -1,0 +1,102 @@
+import type { FetchAPIFileUploadOptions } from '../../config/types.js'
+
+import { APIError } from '../../errors/APIError.js'
+import { isEligibleRequest } from './isEligibleRequest.js'
+import { processMultipart } from './processMultipart.js'
+import { debugLog } from './utilities.js'
+
+const DEFAULT_REQUEST_SIZE_LIMIT = 50 * 1024 * 1024
+
+const DEFAULT_UPLOAD_OPTIONS: FetchAPIFileUploadOptions = {
+  abortOnLimit: true,
+  createParentPath: false,
+  debug: false,
+  defParamCharset: 'utf8',
+  limitHandler: false,
+  limits: { fields: 20, fieldSize: 1024 * 1024, files: 3, fileSize: 20 * 1024 * 1024 },
+  parseNested: false,
+  preserveExtension: false,
+  requestSizeLimit: DEFAULT_REQUEST_SIZE_LIMIT,
+  responseOnLimit: 'File size limit has been reached',
+  safeFileNames: false,
+  tempFileDir: 'tmp', // Relative path is created inside current workdir.
+  uploadTimeout: 60000,
+  uriDecodeFileNames: false,
+  useTempFiles: false,
+}
+
+export type FileShape = {
+  data: Buffer
+  encoding: string
+  md5: Buffer | string
+  mimetype: string
+  mv: (filePath: string, callback: () => void) => Promise<void> | void
+  name: string
+  size: number
+  tempFilePath: string
+  truncated: boolean
+}
+
+type FetchAPIFileUploadResponseFile = {
+  data: Buffer
+  mimetype: string
+  name: string
+  size: number
+  tempFilePath?: string
+}
+
+export type FetchAPIFileUploadResponse = {
+  error?: APIError
+  fields: Record<string, string>
+  files: Record<string, FetchAPIFileUploadResponseFile>
+}
+
+type FetchAPIFileUpload = (args: {
+  options?: FetchAPIFileUploadOptions
+  request: Request
+}) => Promise<FetchAPIFileUploadResponse>
+
+export const processMultipartFormdata: FetchAPIFileUpload = async ({
+  options: incomingOptions,
+  request,
+}) => {
+  const requestSizeLimit =
+    incomingOptions?.requestSizeLimit === undefined
+      ? DEFAULT_REQUEST_SIZE_LIMIT
+      : incomingOptions.requestSizeLimit
+
+  if (
+    requestSizeLimit !== Infinity &&
+    (!Number.isSafeInteger(requestSizeLimit) || requestSizeLimit < 0)
+  ) {
+    throw new TypeError(
+      'requestSizeLimit must be Infinity or a non-negative safe integer representing bytes',
+    )
+  }
+
+  const options: FetchAPIFileUploadOptions = {
+    ...DEFAULT_UPLOAD_OPTIONS,
+    ...incomingOptions,
+    abortOnLimit: incomingOptions?.abortOnLimit ?? DEFAULT_UPLOAD_OPTIONS.abortOnLimit,
+    limits: { ...DEFAULT_UPLOAD_OPTIONS.limits },
+    requestSizeLimit,
+  }
+
+  for (const [key, value] of Object.entries(incomingOptions?.limits || {})) {
+    if (value !== undefined) {
+      options.limits![key as keyof NonNullable<FetchAPIFileUploadOptions['limits']>] = value
+    }
+  }
+
+  if (!isEligibleRequest(request)) {
+    debugLog(options, 'Request is not eligible for file upload!')
+
+    return {
+      error: new APIError('Request is not eligible for file upload', 500),
+      fields: undefined!,
+      files: undefined!,
+    }
+  } else {
+    return processMultipart({ options, request })
+  }
+}

@@ -1,0 +1,234 @@
+import { execSync } from 'child_process'
+import ciInfo from 'ci-info'
+import { randomBytes } from 'crypto'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+import type { Payload } from '../../types/index.js'
+import type { AdminInitEvent } from './events/adminInit.js'
+import type { ServerInitEvent } from './events/serverInit.js'
+import type { FeatureInfo } from './featureInfo/types.js'
+import type { FigmaProduct, ProjectCohort } from './getProjectContext.js'
+
+import { findUp } from '../findUp.js'
+import { Conf } from './conf/index.js'
+import { getFeatureInfo } from './featureInfo/getFeatureInfo.js'
+import { getProjectContext } from './getProjectContext.js'
+import { oneWayHash } from './oneWayHash.js'
+
+export type BaseEvent = {
+  ciName: null | string
+  dbAdapter: string
+  emailAdapter: null | string
+  envID: string
+  figmaProduct?: FigmaProduct
+  frameworkAdapter: 'next' | 'tanstack-start' | 'unknown'
+  isCI: boolean
+  locales: string[]
+  localizationDefaultLocale: null | string
+  localizationEnabled: boolean
+  nodeEnv: string
+  nodeVersion: string
+  payloadVersion: string
+  /** Slugs of installed first-party (`@payloadcms/`) plugins. */
+  plugins: string[]
+  projectCohorts: ProjectCohort[]
+  projectID: string
+  projectIDSource: 'cwd' | 'git' | 'packageJSON' | 'serverURL'
+  uploadAdapters: string[]
+} & FeatureInfo
+
+type PackageJSON = {
+  dependencies: Record<string, string | undefined>
+  name: string
+}
+
+type TelemetryEvent = AdminInitEvent | ServerInitEvent
+
+type Args<TEvent extends { type: string } = TelemetryEvent> = {
+  event: TEvent
+  payload: Payload
+}
+
+let baseEvent: BaseEvent | null = null
+
+export const sendTelemetryEvent = async <TEvent extends { type: string }>({
+  event,
+  payload,
+}: Args<TEvent>): Promise<void> => {
+  try {
+    if (payload.config.telemetry !== false) {
+      const { packageJSON, packageJSONPath } = await getPackageJSON()
+
+      // Only generate the base event once
+      if (!baseEvent) {
+        const { projectID, source: projectIDSource } = getProjectID(payload, packageJSON!)
+        const plugins = getInstalledPluginSlugs(payload)
+        const packages = Object.keys(packageJSON!.dependencies ?? {})
+        baseEvent = {
+          ciName: ciInfo.isCI ? ciInfo.name : null,
+          envID: getEnvID(),
+          isCI: ciInfo.isCI,
+          nodeEnv: process.env.NODE_ENV || 'development',
+          nodeVersion: process.version,
+          payloadVersion: getPayloadVersion(packageJSON!),
+          projectID,
+          projectIDSource,
+          ...getProjectContext({
+            packages,
+            payload,
+            plugins,
+          }),
+          frameworkAdapter: getFrameworkAdapter(packages),
+          ...getFeatureInfo(payload.config),
+          ...getLocalizationInfo(payload),
+          dbAdapter: payload.db.name,
+          emailAdapter: payload.email?.name || null,
+          plugins,
+          uploadAdapters: payload.config.upload.adapters,
+        }
+      }
+
+      if (process.env.PAYLOAD_TELEMETRY_DEBUG) {
+        payload.logger.info({
+          event: { ...baseEvent, ...event, packageJSONPath },
+          msg: 'Telemetry Event',
+        })
+        return
+      }
+
+      await fetch('https://telemetry.payloadcms.com/events', {
+        body: JSON.stringify({ ...baseEvent, ...event }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        method: 'post',
+      })
+    }
+  } catch (_) {
+    // Eat any errors in sending telemetry event
+  }
+}
+
+/**
+ * This is a quasi-persistent identifier used to dedupe recurring events. It's
+ * generated from random data and completely anonymous.
+ */
+const getEnvID = (): string => {
+  const conf = new Conf()
+  const ENV_ID = 'envID'
+
+  const val = conf.get(ENV_ID)
+  if (val) {
+    return val as string
+  }
+
+  const generated = randomBytes(32).toString('hex')
+  conf.set(ENV_ID, generated)
+  return generated
+}
+
+const getProjectID = (
+  payload: Payload,
+  packageJSON: PackageJSON,
+): { projectID: string; source: BaseEvent['projectIDSource'] } => {
+  const gitID = getGitID(payload)
+  if (gitID) {
+    return { projectID: oneWayHash(gitID, payload.secret), source: 'git' }
+  }
+
+  const packageJSONID = getPackageJSONID(payload, packageJSON)
+  if (packageJSONID) {
+    return { projectID: oneWayHash(packageJSONID, payload.secret), source: 'packageJSON' }
+  }
+
+  const serverURL = payload.config.serverURL
+  if (serverURL) {
+    return { projectID: oneWayHash(serverURL, payload.secret), source: 'serverURL' }
+  }
+
+  const cwd = process.cwd()
+  return { projectID: oneWayHash(cwd, payload.secret), source: 'cwd' }
+}
+
+const getGitID = (payload: Payload) => {
+  try {
+    const originBuffer = execSync('git config --local --get remote.origin.url', {
+      stdio: 'pipe',
+      timeout: 1000,
+    })
+
+    return oneWayHash(String(originBuffer).trim(), payload.secret)
+  } catch (_) {
+    return null
+  }
+}
+
+const getPackageJSON = async (): Promise<{
+  packageJSON?: PackageJSON
+  packageJSONPath: string
+}> => {
+  let packageJSONPath = path.resolve(process.cwd(), 'package.json')
+
+  if (!fs.existsSync(packageJSONPath)) {
+    // Old logic
+    const filename = fileURLToPath(import.meta.url)
+    const dirname = path.dirname(filename)
+    packageJSONPath = (await findUp({
+      dir: dirname,
+      fileNames: ['package.json'],
+    }))!
+  }
+
+  const jsonContentString = await fs.promises.readFile(packageJSONPath, 'utf-8')
+  const jsonContent: PackageJSON = JSON.parse(jsonContentString)
+  return { packageJSON: jsonContent, packageJSONPath }
+}
+
+const getPackageJSONID = (payload: Payload, packageJSON: PackageJSON): string => {
+  return oneWayHash(packageJSON.name, payload.secret)
+}
+
+export const getPayloadVersion = (packageJSON: PackageJSON): string => {
+  return packageJSON?.dependencies?.payload ?? ''
+}
+
+const getFrameworkAdapter = (packages: string[]): 'next' | 'tanstack-start' | 'unknown' => {
+  if (packages.includes('@payloadcms/tanstack-start')) {
+    return 'tanstack-start'
+  }
+
+  if (packages.includes('@payloadcms/next')) {
+    return 'next'
+  }
+
+  return 'unknown'
+}
+
+/**
+ * Slugs of installed first-party (`@payloadcms/`) plugins. Custom plugin slugs
+ * are author-defined and can leak project details, so they are never collected.
+ */
+export const getInstalledPluginSlugs = (payload: Payload): string[] =>
+  (payload.config.plugins ?? [])
+    .map((plugin) => plugin.slug)
+    .filter((slug): slug is string => typeof slug === 'string' && slug.startsWith('@payloadcms/'))
+
+export const getLocalizationInfo = (
+  payload: Payload,
+): Pick<BaseEvent, 'locales' | 'localizationDefaultLocale' | 'localizationEnabled'> => {
+  if (!payload.config.localization) {
+    return {
+      locales: [],
+      localizationDefaultLocale: null,
+      localizationEnabled: false,
+    }
+  }
+
+  return {
+    locales: payload.config.localization.localeCodes,
+    localizationDefaultLocale: payload.config.localization.defaultLocale,
+    localizationEnabled: true,
+  }
+}

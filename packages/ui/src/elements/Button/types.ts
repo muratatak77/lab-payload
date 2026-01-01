@@ -1,0 +1,65 @@
+import type { AriaAttributes, ElementType, KeyboardEventHandler, MouseEvent } from 'react'
+import type React from 'react'
+
+type secondaryAction = {
+  label: string
+  onClick: (event: MouseEvent) => void
+}
+
+export type Props = {
+  'aria-controls'?: AriaAttributes['aria-controls']
+  'aria-expanded'?: AriaAttributes['aria-expanded']
+  'aria-haspopup'?: AriaAttributes['aria-haspopup']
+  'aria-label'?: AriaAttributes['aria-label']
+  'aria-pressed'?: AriaAttributes['aria-pressed']
+  buttonId?: string
+  buttonStyle?:
+    | 'dashed'
+    | 'destructive'
+    | 'ghost'
+    | 'link'
+    | 'pill'
+    | 'primary'
+    | 'primary-ghost'
+    | 'secondary'
+  children?: React.ReactNode
+  className?: string
+  disabled?: boolean
+  el?: 'anchor' | 'link' | ElementType
+  /**
+   * Setting to `true` will allow the submenu to be opened when the button is disabled
+   */
+  enableSubMenu?: boolean
+  extraButtonProps?: Record<string, any>
+  icon?: ['chevron' | 'edit' | 'plus' | 'x'] | React.ReactNode
+  iconPosition?: 'left' | 'right'
+  id?: string
+  /**
+   * Shows a loading spinner and hides content. Disables interactions.
+   */
+  loading?: boolean
+  margin?: boolean
+  newTab?: boolean
+  onClick?: (event: MouseEvent) => void
+  onKeyDown?: KeyboardEventHandler
+  onMouseDown?: (event: MouseEvent) => void
+  popupAriaLabel?: string
+  /**
+   * Size of the chevron icon in the split-button popup trigger.
+   * @default 24
+   */
+  popupIconSize?: 16 | 24
+  ref?: React.RefObject<HTMLAnchorElement | HTMLButtonElement | null>
+  round?: boolean
+  secondaryActions?: secondaryAction | secondaryAction[]
+  /**
+   * Applies selected/active styling (e.g., for popup triggers when popup is open)
+   */
+  selected?: boolean
+  size?: 'large' | 'medium'
+  SubMenuPopupContent?: (props: { close: () => void }) => React.ReactNode
+  to?: string
+  tooltip?: string
+  type?: 'button' | 'submit'
+  url?: string
+}

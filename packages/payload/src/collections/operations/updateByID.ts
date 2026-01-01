@@ -1,0 +1,417 @@
+import type { DeepPartial } from 'ts-essentials'
+
+import type { FindOneArgs } from '../../database/types.js'
+import type {
+  PayloadRequest,
+  PopulateType,
+  SelectType,
+  TransformCollectionWithSelect,
+} from '../../types/index.js'
+import type {
+  Collection,
+  RequiredDataFromCollectionSlug,
+  SelectFromCollectionSlug,
+  TypeWithID,
+} from '../config/types.js'
+
+import { executeAccess } from '../../auth/executeAccess.js'
+import { hasWhereAccessResult } from '../../auth/types.js'
+import { combineQueries } from '../../database/combineQueries.js'
+import { APIError, Forbidden, NotFound } from '../../errors/index.js'
+import { type CollectionSlug, deepCopyObjectSimple, type FindOptions } from '../../index.js'
+import { runCloudFileUpdate } from '../../uploads/fileVersioning/cloudStorage.js'
+import {
+  abortFileOperationScope,
+  beginFileOperationScope,
+  completeFileOperationScope,
+} from '../../uploads/fileVersioning/fileOperationManager.js'
+import { withLegacyCloudUploadFileData } from '../../uploads/fileVersioning/storedFiles.js'
+import { generateFileData } from '../../uploads/generateFileData.js'
+import {
+  getLocalizedUploadProperties,
+  getUploadDestination,
+  mergeUploadDataWithDocument,
+  sanitizeUploadData,
+} from '../../uploads/sanitizeUploadData.js'
+import { unlinkTempFiles } from '../../uploads/unlinkTempFiles.js'
+import { appendNonTrashedFilter } from '../../utilities/appendNonTrashedFilter.js'
+import { assertNoValidationWrite } from '../../utilities/assertNoValidationWrite.js'
+import { commitTransaction } from '../../utilities/commitTransaction.js'
+import { hasLocalizeStatusEnabled } from '../../utilities/getVersionsConfig.js'
+import { httpStatus } from '../../utilities/httpStatus.js'
+import { initTransaction } from '../../utilities/initTransaction.js'
+import { killTransaction } from '../../utilities/killTransaction.js'
+import { resolveSelect } from '../../utilities/resolveSelect.js'
+import { sanitizeSelect } from '../../utilities/sanitizeSelect.js'
+import {
+  getAllLocalesPublicationStatus,
+  normalizeAllLocalesPublicationStatus,
+  reconcileAllLocalesPublicationStatus,
+  validateAllLocalesPublicationFlags,
+} from '../../versions/allLocalesPublicationStatus.js'
+import { getLatestCollectionVersion } from '../../versions/getLatestCollectionVersion.js'
+import { buildAfterOperation } from './utilities/buildAfterOperation.js'
+import { buildBeforeOperation } from './utilities/buildBeforeOperation.js'
+import { updateDocument } from './utilities/update.js'
+
+export type Arguments<TSlug extends CollectionSlug> = {
+  autosave?: boolean
+  collection: Collection
+  data: DeepPartial<RequiredDataFromCollectionSlug<TSlug>>
+  depth?: number
+  disableTransaction?: boolean
+  disableVerificationEmail?: boolean
+  draft?: boolean
+  id: number | string
+  overrideAccess?: boolean
+  overrideLock?: boolean
+  overwriteExistingFiles?: boolean
+  populate?: PopulateType
+  publishAllLocales?: boolean
+  req: PayloadRequest
+  showHiddenFields?: boolean
+  trash?: boolean
+  unpublishAllLocales?: boolean
+} & Pick<FindOptions<TSlug, SelectType>, 'select'>
+
+export const updateByIDOperation = async <
+  TSlug extends CollectionSlug,
+  TSelect extends SelectFromCollectionSlug<TSlug> = SelectType,
+>(
+  incomingArgs: Arguments<TSlug>,
+): Promise<TransformCollectionWithSelect<TSlug, TSelect>> => {
+  let args = incomingArgs
+  const hasFileOperationScope = Boolean(args.collection.config.upload)
+
+  if (hasFileOperationScope) {
+    beginFileOperationScope({ req: args.req })
+  }
+
+  assertNoValidationWrite(args.req)
+
+  try {
+    const shouldCommit = !args.disableTransaction && (await initTransaction(args.req))
+
+    if (args.collection.config.upload && !args.overrideAccess) {
+      const { objectKey, prefix } = getUploadDestination({ data: args.data, file: args.req.file })
+      const data = sanitizeUploadData(args.data, 'update')
+
+      args = {
+        ...args,
+        data:
+          typeof data === 'object' && data !== null
+            ? {
+                ...data,
+                ...(prefix !== undefined ? { prefix } : {}),
+                ...(objectKey !== undefined ? { _objectKey: objectKey } : {}),
+              }
+            : data,
+      }
+    }
+
+    validateAllLocalesPublicationFlags({
+      publishAllLocales: args.publishAllLocales,
+      unpublishAllLocales: args.unpublishAllLocales,
+    })
+
+    const initialCollectionConfig = args.collection.config
+    const initialAllLocalesPublicationStatus = getAllLocalesPublicationStatus({
+      hasLocalizedStatus: Boolean(
+        args.req.payload.config.localization && hasLocalizeStatusEnabled(initialCollectionConfig),
+      ),
+      publishAllLocales:
+        !args.draft &&
+        (args.publishAllLocales ??
+          (hasLocalizeStatusEnabled(initialCollectionConfig) && args.req.locale !== 'all'
+            ? false
+            : true)),
+      unpublishAllLocales: Boolean(args.unpublishAllLocales),
+    })
+
+    const initialAllLocalesPublicationIntent = normalizeAllLocalesPublicationStatus({
+      data: args.data,
+      status: initialAllLocalesPublicationStatus,
+    })
+    // /////////////////////////////////////
+    // beforeOperation - Collection
+    // /////////////////////////////////////
+
+    args = await buildBeforeOperation({
+      args,
+      collection: args.collection.config,
+      operation: 'update',
+      overrideAccess: args.overrideAccess!,
+    })
+
+    const {
+      id,
+      autosave = false,
+      collection: { config: collectionConfig },
+      collection,
+      depth,
+      draft: draftArg = false,
+      overrideAccess,
+      overrideLock,
+      overwriteExistingFiles = false,
+      populate,
+      publishAllLocales: publishAllLocalesArg,
+      req: {
+        fallbackLocale,
+        locale,
+        payload: { config },
+        payload,
+      },
+      req,
+      select: incomingSelect,
+      showHiddenFields,
+      trash = false,
+      unpublishAllLocales: unpublishAllLocalesArg,
+    } = args
+
+    if (!id) {
+      throw new APIError('Missing ID of document to update.', httpStatus.BAD_REQUEST)
+    }
+
+    let { data } = args
+
+    validateAllLocalesPublicationFlags({
+      publishAllLocales: publishAllLocalesArg,
+      unpublishAllLocales: unpublishAllLocalesArg,
+    })
+
+    const requestedAllLocalesPublicationStatus = getAllLocalesPublicationStatus({
+      hasLocalizedStatus: Boolean(
+        config.localization && hasLocalizeStatusEnabled(collectionConfig),
+      ),
+      publishAllLocales:
+        !draftArg &&
+        (publishAllLocalesArg ?? !(hasLocalizeStatusEnabled(collectionConfig) && locale !== 'all')),
+      unpublishAllLocales: Boolean(unpublishAllLocalesArg),
+    })
+    const allLocalesPublicationStatus = reconcileAllLocalesPublicationStatus({
+      data,
+      intent: initialAllLocalesPublicationIntent,
+      status: requestedAllLocalesPublicationStatus,
+    })
+    const publicationIntentSurvivedBeforeOperation =
+      !requestedAllLocalesPublicationStatus || Boolean(allLocalesPublicationStatus)
+    const publishAllLocales = publicationIntentSurvivedBeforeOperation
+      ? publishAllLocalesArg
+      : false
+    const unpublishAllLocales = publicationIntentSurvivedBeforeOperation
+      ? unpublishAllLocalesArg
+      : false
+
+    // /////////////////////////////////////
+    // Access
+    // /////////////////////////////////////
+
+    const accessResults = !overrideAccess
+      ? await executeAccess(
+          { id, slug: collectionConfig.slug, data, req },
+          collectionConfig.access.update,
+        )
+      : true
+    const hasWherePolicy = hasWhereAccessResult(accessResults)
+
+    // /////////////////////////////////////
+    // Retrieve document
+    // /////////////////////////////////////
+
+    const where = { id: { equals: id } }
+
+    let fullWhere = combineQueries(where, accessResults)
+
+    const isTrashAttempt =
+      collectionConfig.trash &&
+      typeof data === 'object' &&
+      data !== null &&
+      'deletedAt' in data &&
+      data.deletedAt != null
+
+    if (isTrashAttempt && !overrideAccess) {
+      // Pass data so access function can check data.deletedAt to know it's a trash attempt
+      const deleteAccessResult = await executeAccess(
+        { id, slug: collectionConfig.slug, data, req },
+        collectionConfig.access.delete,
+      )
+      fullWhere = combineQueries(fullWhere, deleteAccessResult)
+    }
+
+    // Exclude trashed documents when trash: false
+    fullWhere = appendNonTrashedFilter({
+      enableTrash: collectionConfig.trash,
+      trash,
+      where: fullWhere,
+    })
+
+    const findOneArgs: FindOneArgs = {
+      collection: collectionConfig.slug,
+      locale: locale!,
+      req,
+      where: fullWhere,
+    }
+
+    let docWithLocales = await getLatestCollectionVersion<
+      RequiredDataFromCollectionSlug<TSlug> & TypeWithID
+    >({
+      id,
+      config: collectionConfig,
+      payload,
+      query: findOneArgs,
+      req,
+    })
+
+    if (!docWithLocales && !hasWherePolicy) {
+      throw new NotFound(req.t)
+    }
+    if (!docWithLocales && hasWherePolicy) {
+      throw new Forbidden(req.t)
+    }
+    if (!docWithLocales) {
+      throw new NotFound(req.t)
+    }
+
+    const storedDocWithLocales = docWithLocales
+    if (collectionConfig.upload.fileOperations) {
+      docWithLocales = await withLegacyCloudUploadFileData({
+        collection: collectionConfig,
+        doc: docWithLocales,
+        req,
+      })
+    }
+
+    if (collectionConfig.upload && !overrideAccess) {
+      data = mergeUploadDataWithDocument(data, docWithLocales, {
+        locale:
+          locale === 'all' || !locale
+            ? config.localization
+              ? config.localization.defaultLocale
+              : undefined
+            : locale,
+        localizedProperties: getLocalizedUploadProperties(collectionConfig.flattenedFields),
+      })
+    }
+
+    // /////////////////////////////////////
+    // Generate data for all files and sizes
+    // /////////////////////////////////////
+
+    const { data: newFileData, files: filesToUpload } = await generateFileData({
+      collection,
+      config,
+      data,
+      operation: 'update',
+      originalDoc: docWithLocales,
+      overwriteExistingFiles,
+      req,
+      throwOnMissingFile: false,
+    })
+
+    const select = sanitizeSelect({
+      fields: collectionConfig.flattenedFields,
+      select: resolveSelect({
+        config: collectionConfig.select,
+        operation: 'update',
+        req,
+        select: incomingSelect,
+      }),
+    })
+
+    // ///////////////////////////////////////////////
+    // Update document, runs all document level hooks
+    // ///////////////////////////////////////////////
+
+    const updateArgs = {
+      id,
+      autosave,
+      collectionConfig,
+      config,
+      data: deepCopyObjectSimple(newFileData),
+      depth: depth!,
+      docWithLocales,
+      draftArg,
+      fallbackLocale: fallbackLocale!,
+      filesToUpload,
+      locale: locale!,
+      overrideAccess: overrideAccess!,
+      overrideLock: overrideLock!,
+      payload,
+      populate,
+      publishAllLocales,
+      req,
+      select: select!,
+      shouldManageLocalFiles: true,
+      showHiddenFields: showHiddenFields!,
+      unpublishAllLocales,
+    } as const
+
+    const write = () => updateDocument<TSlug, TSelect>(updateArgs)
+    let result = collectionConfig.upload.fileOperations
+      ? await runCloudFileUpdate({
+          id,
+          collection: collectionConfig,
+          current: storedDocWithLocales,
+          data: updateArgs.data,
+          files: filesToUpload,
+          req,
+          write,
+        })
+      : await write()
+
+    // /////////////////////////////////////
+    // Add collection property for auth collections
+    // /////////////////////////////////////
+
+    if (collectionConfig.auth) {
+      result = { ...result, collection: collectionConfig.slug }
+    }
+
+    await unlinkTempFiles({
+      collectionConfig,
+      config,
+      req,
+    }).catch((unlinkError) => {
+      req.payload.logger.error({ err: unlinkError, msg: 'Failed to remove temp file' })
+    })
+
+    // /////////////////////////////////////
+    // afterOperation - Collection
+    // /////////////////////////////////////
+
+    result = (await buildAfterOperation({
+      args,
+      collection: collectionConfig,
+      operation: 'updateByID',
+      overrideAccess,
+      result,
+    })) as TransformCollectionWithSelect<TSlug, TSelect>
+
+    // /////////////////////////////////////
+    // Return results
+    // /////////////////////////////////////
+
+    if (shouldCommit) {
+      await commitTransaction(req)
+    }
+
+    if (hasFileOperationScope) {
+      await completeFileOperationScope({ req })
+    }
+
+    return result
+  } catch (error: unknown) {
+    await unlinkTempFiles({
+      collectionConfig: args.collection.config,
+      config: args.req.payload.config,
+      req: args.req,
+    }).catch((unlinkError) => {
+      args.req.payload.logger.error({ err: unlinkError, msg: 'Failed to remove temp file' })
+    })
+    await killTransaction(args.req)
+    if (hasFileOperationScope) {
+      await abortFileOperationScope({ req: args.req })
+    }
+    throw error
+  }
+}

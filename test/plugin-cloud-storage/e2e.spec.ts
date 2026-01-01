@@ -1,0 +1,102 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import dotenv from 'dotenv'
+import * as path from 'path'
+import { fileURLToPath } from 'url'
+
+import { saveDocAndAssert } from '../__helpers/e2e/helpers.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../__setup/e2e/ensureCompilationIsDone.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { mediaSlug } from './shared.js'
+import { createTestBucket } from './utils.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+dotenv.config({ path: path.resolve(dirname, './.env.emulated') })
+
+async function selectFile(page: Page, filePath: string) {
+  await expect(async () => {
+    await page.setInputFiles('input[type="file"]', filePath)
+    await expect(page.locator('#field-filemanager-filename')).toBeVisible({ timeout: 2000 })
+  }).toPass({ intervals: [1000], timeout: 15000 })
+}
+
+test.describe('Cloud Storage Plugin', () => {
+  let page: Page
+  let mediaURL: AdminUrlUtil
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    const { serverURL } = await initPayloadE2ENoConfig({ dirname })
+    mediaURL = new AdminUrlUtil(serverURL, mediaSlug)
+    await createTestBucket()
+
+    const context = await browser.newContext()
+    page = await context.newPage()
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  test('should create file upload', async () => {
+    await page.goto(mediaURL.create)
+    await selectFile(page, path.resolve(dirname, './image.png'))
+
+    const filename = page.locator('#field-filemanager-filename')
+
+    await expect(filename).toHaveValue('image.png')
+
+    await saveDocAndAssert(page)
+  })
+
+  test('should update an existing upload', async () => {
+    await page.goto(mediaURL.create)
+    await selectFile(page, path.resolve(dirname, './image.png'))
+
+    const filename = page.locator('#field-filemanager-filename')
+
+    await expect(filename).toHaveValue('image.png')
+
+    await saveDocAndAssert(page)
+
+    // Update alt text
+    await page.locator('#field-alt').fill('updated text')
+
+    // Save again
+    await saveDocAndAssert(page)
+  })
+
+  test('should not cause infinite loop after cropping image', async () => {
+    let updateRequestCount = 0
+    page.on('request', (request) => {
+      if (request.url().includes('/api/media/') && request.method() === 'PATCH') {
+        updateRequestCount++
+      }
+    })
+
+    await page.goto(mediaURL.create)
+    await selectFile(page, path.resolve(dirname, './image.png'))
+    await expect(page.locator('#field-filemanager-filename')).toHaveValue('image.png')
+    await saveDocAndAssert(page)
+
+    await page.locator('button[aria-label="Edit Image"]').click()
+    await page.locator('.edit-upload__dialog').waitFor({ state: 'visible', timeout: 10000 })
+
+    const focalPointArea = page.locator('.edit-upload__focalPoint')
+    await focalPointArea.waitFor({ state: 'visible' })
+    const box = await focalPointArea.boundingBox()
+    await expect.poll(() => box).not.toBeNull()
+    await page.mouse.click(box!.x + box!.width * 0.3, box!.y + box!.height * 0.7)
+
+    await page.locator('.edit-upload__dialog button').filter({ hasText: 'Apply changes' }).click()
+    await page.locator('.edit-upload__dialog').waitFor({ state: 'hidden', timeout: 10000 })
+
+    await page.locator('#action-save').click()
+    await expect(page.locator('.payload-toast-container .toast-success')).toBeVisible({
+      timeout: 30000,
+    })
+    await expect.poll(() => updateRequestCount).toBeLessThanOrEqual(2)
+  })
+})

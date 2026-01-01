@@ -1,0 +1,352 @@
+import type { I18nClient, TFunction } from '@payloadcms/translations'
+
+import type { StaticDescription } from '../../admin/types.js'
+import type { ImportMap } from '../../cli/commands/generateImportMap/generateImportMap.js'
+import type {
+  LivePreviewConfig,
+  ServerOnlyLivePreviewProperties,
+  StaticLabel,
+} from '../../config/types.js'
+import type { ClientField } from '../../fields/config/client.js'
+import type { ClientHierarchyConfig } from '../../hierarchy/types.js'
+import type { Payload } from '../../types/index.js'
+import type { SanitizedUploadConfig, UploadInstructionsCapability } from '../../uploads/types.js'
+import type { SanitizedCollectionConfig } from './types.js'
+
+import { createClientFields } from '../../fields/config/client.js'
+
+export type ServerOnlyCollectionProperties = keyof Pick<
+  SanitizedCollectionConfig,
+  | 'access'
+  | 'custom'
+  | 'endpoints'
+  | 'flattenedFields'
+  | 'hooks'
+  | 'indexes'
+  | 'joins'
+  | 'llmInstructions'
+  | 'polymorphicJoins'
+  | 'sanitizedIndexes'
+  | 'select'
+>
+
+export type ServerOnlyCollectionAdminProperties = keyof Pick<
+  SanitizedCollectionConfig['admin'],
+  'baseFilter' | 'baseListFilter' | 'components' | 'formatDocURL' | 'hidden'
+>
+
+export type ServerOnlyUploadProperties = keyof Pick<
+  SanitizedCollectionConfig['upload'],
+  | 'admin'
+  | 'adminThumbnail'
+  | 'externalFileHeaderFilter'
+  | 'fileOperations'
+  | 'handlers'
+  | 'modifyResponseHeaders'
+  | 'uploadInstructions'
+>
+
+type ClientUploadConfig = {
+  uploadInstructions: Pick<UploadInstructionsCapability, 'useInAdmin'>
+} & Omit<SanitizedUploadConfig, 'fileOperations' | 'uploadInstructions'>
+
+export type ClientCollectionConfig = {
+  admin: {
+    description?: StaticDescription
+    livePreview?: Omit<LivePreviewConfig, ServerOnlyLivePreviewProperties>
+    preview?: boolean
+  } & Omit<
+    SanitizedCollectionConfig['admin'],
+    | 'components'
+    | 'description'
+    | 'formatDocURL'
+    | 'joins'
+    | 'livePreview'
+    | 'preview'
+    | ServerOnlyCollectionAdminProperties
+  >
+  auth?: {
+    forgotPassword: Pick<SanitizedCollectionConfig['auth']['forgotPassword'], 'minRequestInterval'>
+    verify?: true
+  } & Omit<SanitizedCollectionConfig['auth'], 'forgotPassword' | 'strategies' | 'verify'>
+  fields: ClientField[]
+  hierarchy?: ClientHierarchyConfig | false
+  labels: {
+    plural: StaticLabel
+    singular: StaticLabel
+  }
+  upload: ClientUploadConfig
+} & Omit<
+  SanitizedCollectionConfig,
+  'admin' | 'auth' | 'fields' | 'hierarchy' | 'labels' | 'upload' | ServerOnlyCollectionProperties
+>
+
+const serverOnlyCollectionProperties: Partial<ServerOnlyCollectionProperties>[] = [
+  'hooks',
+  'access',
+  'endpoints',
+  'custom',
+  'joins',
+  'llmInstructions',
+  'polymorphicJoins',
+  'flattenedFields',
+  'indexes',
+  'sanitizedIndexes',
+  'select',
+  // `upload`
+  // `admin`
+  // are all handled separately
+]
+
+const serverOnlyUploadProperties: Partial<ServerOnlyUploadProperties>[] = [
+  'admin',
+  'adminThumbnail',
+  'externalFileHeaderFilter',
+  'fileOperations',
+  'handlers',
+  'modifyResponseHeaders',
+  'uploadInstructions',
+]
+
+const serverOnlyCollectionAdminProperties: Partial<ServerOnlyCollectionAdminProperties>[] = [
+  'hidden',
+  'baseFilter',
+  'baseListFilter',
+  'components',
+  'formatDocURL',
+  // 'preview' is handled separately
+  // `livePreview` is handled separately
+]
+
+export const createClientCollectionConfig = ({
+  collection,
+  defaultIDType,
+  i18n,
+  importMap,
+}: {
+  collection: SanitizedCollectionConfig
+  defaultIDType: Payload['config']['db']['defaultIDType']
+  i18n: I18nClient
+  importMap: ImportMap
+}): ClientCollectionConfig => {
+  const clientCollection = {} as Partial<ClientCollectionConfig>
+
+  for (const key in collection) {
+    if (serverOnlyCollectionProperties.includes(key as any)) {
+      continue
+    }
+    switch (key) {
+      case 'admin':
+        if (!collection.admin) {
+          break
+        }
+
+        clientCollection.admin = {}
+
+        for (const adminKey in collection.admin) {
+          if (serverOnlyCollectionAdminProperties.includes(adminKey as any)) {
+            continue
+          }
+
+          switch (adminKey) {
+            case 'description':
+              if (
+                typeof collection.admin.description === 'string' ||
+                typeof collection.admin.description === 'object'
+              ) {
+                if (collection.admin.description) {
+                  clientCollection.admin.description = collection.admin.description
+                }
+              } else if (typeof collection.admin.description === 'function') {
+                const description = collection.admin.description({ t: i18n.t as TFunction })
+
+                if (description) {
+                  clientCollection.admin.description = description
+                }
+              }
+              break
+
+            case 'livePreview':
+              clientCollection.admin.livePreview = {}
+
+              if (collection.admin.livePreview?.breakpoints) {
+                clientCollection.admin.livePreview.breakpoints =
+                  collection.admin.livePreview.breakpoints
+              }
+
+              break
+
+            case 'preview':
+              if (collection.admin.preview) {
+                clientCollection.admin.preview = true
+              }
+
+              break
+
+            default:
+              ;(clientCollection as any).admin[adminKey] =
+                collection.admin[adminKey as keyof SanitizedCollectionConfig['admin']]
+          }
+        }
+
+        break
+
+      case 'auth':
+        if (!collection.auth) {
+          break
+        }
+
+        clientCollection.auth = {} as { verify?: true } & SanitizedCollectionConfig['auth']
+
+        clientCollection.auth.forgotPassword = {
+          minRequestInterval: collection.auth.forgotPassword.minRequestInterval,
+        }
+
+        if (collection.auth.cookies) {
+          clientCollection.auth.cookies = collection.auth.cookies
+        }
+
+        if (collection.auth.depth !== undefined) {
+          // Check for undefined as it can be a number (0)
+          clientCollection.auth.depth = collection.auth.depth
+        }
+
+        if (collection.auth.disableLocalStrategy) {
+          clientCollection.auth.disableLocalStrategy = collection.auth.disableLocalStrategy
+        }
+
+        if (collection.auth.lockTime !== undefined) {
+          // Check for undefined as it can be a number (0)
+          clientCollection.auth.lockTime = collection.auth.lockTime
+        }
+
+        if (collection.auth.loginWithUsername) {
+          clientCollection.auth.loginWithUsername = collection.auth.loginWithUsername
+        }
+
+        if (collection.auth.maxLoginAttempts !== undefined) {
+          // Check for undefined as it can be a number (0)
+          clientCollection.auth.maxLoginAttempts = collection.auth.maxLoginAttempts
+        }
+
+        if (collection.auth.removeTokenFromResponses) {
+          clientCollection.auth.removeTokenFromResponses = collection.auth.removeTokenFromResponses
+        }
+
+        if (collection.auth.useAPIKey) {
+          clientCollection.auth.useAPIKey = collection.auth.useAPIKey
+        }
+
+        if (collection.auth.tokenExpiration) {
+          clientCollection.auth.tokenExpiration = collection.auth.tokenExpiration
+        }
+
+        if (collection.auth.verify) {
+          clientCollection.auth.verify = true
+        }
+
+        break
+
+      case 'fields':
+        clientCollection.fields = createClientFields({
+          defaultIDType,
+          fields: collection.fields,
+          i18n,
+          importMap,
+        })
+
+        break
+
+      case 'hierarchy': {
+        if (!collection.hierarchy || typeof collection.hierarchy !== 'object') {
+          clientCollection.hierarchy = false
+          break
+        }
+
+        // Strip slugify function as it can't cross server-client boundary
+        const { slugify: _slugify, ...clientHierarchy } = collection.hierarchy
+        clientCollection.hierarchy = clientHierarchy
+
+        break
+      }
+
+      case 'labels':
+        clientCollection.labels = {
+          plural:
+            typeof collection.labels.plural === 'function'
+              ? collection.labels.plural({ i18n, t: i18n.t as TFunction })
+              : collection.labels.plural,
+          singular:
+            typeof collection.labels.singular === 'function'
+              ? collection.labels.singular({ i18n, t: i18n.t as TFunction })
+              : collection.labels.singular,
+        }
+
+        break
+
+      case 'upload':
+        if (!collection.upload) {
+          break
+        }
+
+        clientCollection.upload = {
+          uploadInstructions: {
+            useInAdmin: collection.upload.uploadInstructions?.useInAdmin ?? false,
+          },
+        } as ClientUploadConfig
+
+        for (const uploadKey in collection.upload) {
+          if (serverOnlyUploadProperties.includes(uploadKey as any)) {
+            continue
+          }
+
+          if (uploadKey === 'variants') {
+            clientCollection.upload.variants = collection.upload.variants?.map((size) => {
+              const sanitizedSize = { ...size }
+              if ('generateImageName' in sanitizedSize) {
+                delete sanitizedSize.generateImageName
+              }
+              return sanitizedSize
+            })
+          } else {
+            ;(clientCollection.upload as any)[uploadKey] =
+              collection.upload[uploadKey as keyof SanitizedUploadConfig]
+          }
+        }
+
+        break
+
+      default:
+        ;(clientCollection as any)[key] = collection[key as keyof SanitizedCollectionConfig]
+    }
+  }
+
+  return clientCollection as ClientCollectionConfig
+}
+
+export const createClientCollectionConfigs = ({
+  collections,
+  defaultIDType,
+  i18n,
+  importMap,
+}: {
+  collections: SanitizedCollectionConfig[]
+  defaultIDType: Payload['config']['db']['defaultIDType']
+  i18n: I18nClient
+  importMap: ImportMap
+}): ClientCollectionConfig[] => {
+  const clientCollections = new Array(collections.length)
+
+  for (let i = 0; i < collections.length; i++) {
+    const collection = collections[i]!
+
+    clientCollections[i] = createClientCollectionConfig({
+      collection,
+      defaultIDType,
+      i18n,
+      importMap,
+    })
+  }
+
+  return clientCollections
+}

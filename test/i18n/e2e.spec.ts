@@ -1,0 +1,262 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+
+import type { Config } from './payload-types.js'
+
+const { beforeAll, beforeEach, describe } = test
+
+import path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../__helpers/shared/sdk/index.js'
+
+import { assertNetworkRequests } from '../__helpers/e2e/assertNetworkRequests.js'
+import { getColumnSelectorItem } from '../__helpers/e2e/columns/index.js'
+import { openListFilters } from '../__helpers/e2e/filters/index.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+
+let payload: PayloadTestSDK<Config>
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+describe('i18n', () => {
+  let page: Page
+
+  let serverURL: string
+  let collection1URL: AdminUrlUtil
+
+  beforeAll(async ({ browser }, testInfo) => {
+    const prebuild = false // Boolean(process.env.CI)
+
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      prebuild,
+    }))
+
+    collection1URL = new AdminUrlUtil(serverURL, 'collection1')
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  async function setUserLanguage(language: 'de' | 'en' | 'es') {
+    {
+      const LanguageLabel = {
+        de: {
+          fieldLabel: 'Sprache',
+          valueLabel: 'Deutsch',
+        },
+        en: {
+          fieldLabel: 'Language',
+          valueLabel: 'English',
+        },
+        es: {
+          fieldLabel: 'Idioma',
+          valueLabel: 'Español',
+        },
+      }[language]
+      await page.goto(serverURL + '/admin/account')
+      await page.locator('.payload-settings__language .react-select').click()
+
+      // Wait for the server action response after selecting the language
+      const responsePromise = page.waitForResponse((response) => {
+        // Server actions in Next.js show up as POST requests
+        return response.request().method() === 'POST' && response.status() === 200
+      })
+
+      await page.locator('.rs__option', { hasText: LanguageLabel.valueLabel }).click()
+
+      await responsePromise
+
+      // Wait for the language field label to update with the translated text
+      // This confirms router.refresh() has completed and re-rendered the page
+      await expect(
+        page.locator('.payload-settings__language', { hasText: LanguageLabel.fieldLabel }),
+      ).toBeVisible()
+    }
+  }
+
+  test('ensure i18n labels and useTranslation hooks display correct translation', async () => {
+    // set language to English
+    await setUserLanguage('en')
+
+    await page.goto(serverURL + '/admin')
+
+    await expect(
+      page.locator('.componentWithDefaultI18n .componentWithDefaultI18nValidT'),
+    ).toHaveText('Add Link')
+    await expect(
+      page.locator('.componentWithDefaultI18n .componentWithDefaultI18nValidI18nT'),
+    ).toHaveText('Add Link')
+    await expect(
+      page.locator('.componentWithDefaultI18n .componentWithDefaultI18nInvalidT'),
+    ).toHaveText('fields:addLink2')
+    await expect(
+      page.locator('.componentWithDefaultI18n .componentWithDefaultI18nInvalidI18nT'),
+    ).toHaveText('fields:addLink2')
+
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nDefaultValidT'),
+    ).toHaveText('Add Link')
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nDefaultValidI18nT'),
+    ).toHaveText('Add Link')
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nDefaultInvalidT'),
+    ).toHaveText('fields:addLink2')
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nDefaultInvalidI18nT'),
+    ).toHaveText('fields:addLink2')
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nCustomValidT'),
+    ).toHaveText('My custom translation')
+    await expect(
+      page.locator('.componentWithCustomI18n .componentWithCustomI18nCustomValidI18nT'),
+    ).toHaveText('My custom translation')
+  })
+
+  test('ensure translations update correctly when switching language', async () => {
+    // set language to English
+    await setUserLanguage('en')
+
+    await expect(page.locator('div.payload-settings h3')).toHaveText('Payload Settings')
+
+    await page.goto(serverURL + '/admin/collections/collection1/create')
+    await expect(page.locator('label[for="field-fieldDefaultI18nValid"]')).toHaveText(
+      'Add {{label}}',
+    )
+
+    // set language to Spanish
+    await setUserLanguage('es')
+    await expect(page.locator('div.payload-settings h3')).toHaveText('Configuración de Payload')
+
+    await page.goto(serverURL + '/admin/collections/collection1/create')
+    await expect(page.locator('label[for="field-fieldDefaultI18nValid"]')).toHaveText(
+      'Añadir {{label}}',
+    )
+  })
+
+  describe('i18n labels', () => {
+    test('should show translated document field label', async () => {
+      // set language to Spanish
+      await setUserLanguage('es')
+
+      await page.goto(collection1URL.create)
+      await expect(
+        page.locator('label[for="field-i18nFieldLabel"]', {
+          hasText: 'es-label',
+        }),
+      ).toBeVisible()
+    })
+
+    test('should show translated pill field label', async () => {
+      // set language to Spanish
+      await setUserLanguage('es')
+
+      await page.goto(collection1URL.list)
+      await page.locator('.columns-button__button').click()
+
+      // expecting the label to fall back to english as default fallbackLng
+      await expect(
+        getColumnSelectorItem({
+          container: page.locator('.popup__content .column-selector'),
+          label: 'es-label',
+        }),
+      ).toBeVisible()
+    })
+
+    test('should show fallback pill field label', async () => {
+      // set language to German
+      await setUserLanguage('de')
+
+      await page.goto(collection1URL.list)
+      await page.locator('.columns-button__button').click()
+
+      // expecting the label to fall back to english as default fallbackLng
+      await expect(
+        getColumnSelectorItem({
+          container: page.locator('.popup__content .column-selector'),
+          label: 'en-label',
+        }),
+      ).toBeVisible()
+    })
+
+    test('should show translated field label in where builder', async () => {
+      await payload.create({
+        collection: 'collection1',
+        data: {
+          i18nFieldLabel: 'Test',
+        },
+        overrideAccess: true,
+      })
+
+      // set language to Spanish
+      await setUserLanguage('es')
+
+      await page.goto(collection1URL.list)
+
+      await openListFilters(page, {})
+      await page.locator('.condition__field .rs__control').click()
+
+      await expect(page.locator('.rs__option', { hasText: 'es-label' })).toBeVisible()
+
+      // expect heading to be translated
+      await expect(
+        page.locator('#heading-i18nFieldLabel .sort-column__label', { hasText: 'es-label' }),
+      ).toBeVisible()
+      await expect(page.locator('#search-filter-input')).toHaveAttribute('placeholder', 'Buscar')
+    })
+
+    test('should show translated field label in the sort button labels', async () => {
+      await payload.create({
+        collection: 'collection1',
+        data: {
+          i18nFieldLabel: 'Test',
+        },
+        overrideAccess: true,
+      })
+
+      await setUserLanguage('en')
+
+      await page.goto(collection1URL.list)
+
+      await expect(page.locator('#heading-i18nFieldLabel .sort-column__asc')).toHaveAttribute(
+        'aria-label',
+        'Sort by en-label Ascending',
+      )
+      await expect(page.locator('#heading-i18nFieldLabel .sort-column__desc')).toHaveAttribute(
+        'aria-label',
+        'Sort by en-label Descending',
+      )
+    })
+
+    test('should display translated collections and globals config options', async () => {
+      // set language to Spanish
+      await setUserLanguage('es')
+
+      await page.goto(collection1URL.list)
+      await expect(
+        page.locator('#nav-collection1', {
+          hasText: 'ES Collection 1s',
+        }),
+      ).toBeVisible()
+      await expect(page.locator('#nav-global-global')).toContainText('ES Global')
+    })
+  })
+})

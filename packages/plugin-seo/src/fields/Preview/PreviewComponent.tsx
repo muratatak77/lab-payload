@@ -1,0 +1,142 @@
+'use client'
+
+import '../colors.css'
+
+import type { UIField } from 'payload'
+
+import {
+  useAllFormFields,
+  useConfig,
+  useDocumentInfo,
+  useDocumentTitle,
+  useForm,
+  useLocale,
+  useTranslation,
+} from '@payloadcms/ui'
+import { reduceToSerializableFields } from '@payloadcms/ui/shared'
+import { formatAdminURL } from 'payload/shared'
+import React, { useEffect, useState } from 'react'
+
+import type { PluginSEOTranslationKeys, PluginSEOTranslations } from '../../translations/index.js'
+import type { GenerateURL } from '../../types.js'
+
+type PreviewProps = {
+  readonly descriptionPath?: string
+  readonly hasGenerateURLFn: boolean
+  readonly titlePath?: string
+} & UIField
+
+export const PreviewComponent: React.FC<PreviewProps> = (props) => {
+  const {
+    descriptionPath: descriptionPathFromContext,
+    hasGenerateURLFn,
+    titlePath: titlePathFromContext,
+  } = props
+
+  const { t } = useTranslation<PluginSEOTranslations, PluginSEOTranslationKeys>()
+
+  const {
+    config: {
+      routes: { api },
+    },
+  } = useConfig()
+
+  const locale = useLocale()
+  const [fields] = useAllFormFields()
+  const { getData } = useForm()
+  const docInfo = useDocumentInfo()
+  const { title } = useDocumentTitle()
+
+  const descriptionPath = descriptionPathFromContext || 'meta.description'
+  const titlePath = titlePathFromContext || 'meta.title'
+
+  const metaDescription = fields[descriptionPath]?.value
+  const metaTitle = fields[titlePath]?.value
+
+  const [href, setHref] = useState<string>()
+
+  useEffect(() => {
+    const endpoint = formatAdminURL({
+      apiRoute: api,
+      path: '/plugin-seo/generate-url',
+    })
+
+    const getHref = async () => {
+      const genURLResponse = await fetch(endpoint, {
+        body: JSON.stringify({
+          id: docInfo.id,
+          collectionSlug: docInfo.collectionSlug,
+          doc: getData(),
+          docPermissions: docInfo.docPermissions,
+          globalSlug: docInfo.globalSlug,
+          hasPublishPermission: docInfo.hasPublishPermission,
+          hasSavePermission: docInfo.hasSavePermission,
+          initialData: docInfo.initialData,
+          initialState: reduceToSerializableFields(docInfo.initialState ?? {}),
+          locale: locale?.code,
+          title,
+        } satisfies Omit<
+          Parameters<GenerateURL>[0],
+          'collectionConfig' | 'globalConfig' | 'hasPublishedDoc' | 'req' | 'versionCount'
+        >),
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+      })
+
+      const { result: newHref } = await genURLResponse.json()
+
+      setHref(newHref)
+    }
+
+    if (hasGenerateURLFn && !href) {
+      void getHref()
+    }
+  }, [fields, href, locale, docInfo, hasGenerateURLFn, getData, api, title])
+
+  return (
+    <div
+      style={{
+        marginBottom: '20px',
+      }}
+    >
+      <div>{t('plugin-seo:preview')}</div>
+      <div
+        style={{
+          color: 'var(--seo-description-color)',
+          marginBottom: '5px',
+        }}
+      >
+        {t('plugin-seo:previewDescription')}
+      </div>
+      <div
+        style={{
+          background: 'var(--color-bg-secondary)',
+          borderRadius: '5px',
+          boxShadow: '0px 0px 10px rgba(0, 0, 0, 0.1)',
+          maxWidth: '600px',
+          padding: '20px',
+          width: '100%',
+        }}
+      >
+        <div>{href || 'https://...'}</div>
+        <div
+          style={{
+            margin: 0,
+          }}
+        >
+          {metaTitle as string}
+        </div>
+        <p
+          style={{
+            margin: 0,
+          }}
+        >
+          {metaDescription as string}
+        </p>
+      </div>
+    </div>
+  )
+}

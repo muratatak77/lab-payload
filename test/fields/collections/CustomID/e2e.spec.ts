@@ -1,0 +1,81 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../../../__helpers/shared/sdk/index.js'
+import type { Config } from '../../payload-types.js'
+
+import { navigateToDoc } from '../../../__helpers/e2e/navigateToDoc.js'
+import { AdminUrlUtil } from '../../../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../../../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../../../__helpers/shared/initPayloadE2ENoConfig.js'
+import { RESTClient } from '../../../__helpers/shared/rest.js'
+import { ensureCompilationIsDone } from '../../../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../../../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../../../playwright.config.js'
+import { customIDSlug, customRowIDSlug, customTabIDSlug } from '../../slugs.js'
+import { customRowID, customTabID, nonStandardID } from './shared.js'
+
+const filename = fileURLToPath(import.meta.url)
+const currentFolder = path.dirname(filename)
+const dirname = path.resolve(currentFolder, '../../')
+
+const { beforeAll, beforeEach, describe } = test
+
+let payload: PayloadTestSDK<Config>
+let client: RESTClient
+let page: Page
+let serverURL: string
+let url: AdminUrlUtil
+let customTabIDURL: AdminUrlUtil
+let customRowIDURL: AdminUrlUtil
+
+describe('Custom IDs', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      // prebuild,
+    }))
+
+    url = new AdminUrlUtil(serverURL, customIDSlug)
+    customTabIDURL = new AdminUrlUtil(serverURL, customTabIDSlug)
+    customRowIDURL = new AdminUrlUtil(serverURL, customRowIDSlug)
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+    if (client) {
+      await client.logout()
+    }
+    client = new RESTClient({ defaultSlug: 'users', serverURL })
+    await client.login()
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  test('allow create of non standard ID', async () => {
+    await page.goto(url.list)
+    await navigateToDoc(page, url)
+    await expect(page.locator('#field-id')).toHaveValue(nonStandardID)
+    await expect(page.locator('.id-label')).toContainText(nonStandardID)
+  })
+
+  test('should use custom ID field nested within unnamed tab', async () => {
+    await page.goto(customTabIDURL.edit(customTabID))
+    const idField = page.locator('#field-id')
+    await expect(idField).toHaveValue(customTabID)
+  })
+
+  test('should use custom ID field nested within row', async () => {
+    await page.goto(customRowIDURL.edit(customRowID))
+    const idField = page.locator('#field-id')
+    await expect(idField).toHaveValue(customRowID)
+  })
+})

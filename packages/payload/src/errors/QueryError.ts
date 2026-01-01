@@ -1,0 +1,15 @@
+import { httpStatus } from '../utilities/httpStatus.js'
+import { APIError } from './APIError.js'
+
+export class QueryError extends APIError<{ path: string }[]> {
+  constructor(results: { path: string }[]) {
+    const message = `The following path${results.length === 1 ? '' : 's'} cannot be queried:`
+
+    super(
+      `${message} ${results.map((err) => err.path).join(', ')}`,
+      httpStatus.BAD_REQUEST,
+      results,
+    )
+    this.name = 'QueryError'
+  }
+}

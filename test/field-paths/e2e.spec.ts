@@ -1,0 +1,72 @@
+import type { BrowserContext, Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import * as path from 'path'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../__helpers/shared/sdk/index.js'
+import type { Config } from './payload-types.js'
+
+import {} from // throttleTest,
+'../__helpers/e2e/helpers.js'
+import { navigateToDiffVersionView } from '../__helpers/e2e/navigateToDiffVersionView.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { fieldPathsSlug } from './shared.js'
+import { testDoc } from './testDoc.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+let context: BrowserContext
+let payload: PayloadTestSDK<Config>
+let serverURL: string
+
+test.describe('Field Paths', () => {
+  let page: Page
+  let fieldPathsUrl: AdminUrlUtil
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig({ dirname }))
+    fieldPathsUrl = new AdminUrlUtil(serverURL, fieldPathsSlug)
+
+    context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  test.beforeEach(async () => {
+    // await throttleTest({ page, context, delay: 'Fast 3G' })
+  })
+
+  test('can load document view', async () => {
+    const { id: docID } = await payload.create({
+      collection: fieldPathsSlug,
+      data: testDoc,
+      overrideAccess: true,
+    })
+
+    await page.goto(fieldPathsUrl.edit(docID))
+
+    await expect(page.locator('.render-fields').first()).toBeVisible()
+  })
+
+  test('can load versions diff view', async () => {
+    const { id: docID } = await payload.create({
+      collection: fieldPathsSlug,
+      data: testDoc,
+      overrideAccess: true,
+    })
+
+    await navigateToDiffVersionView({
+      collectionSlug: fieldPathsSlug,
+      docID,
+      page,
+      serverURL,
+    })
+
+    await expect(page.locator('.render-field-diffs').first()).toBeVisible()
+  })
+})

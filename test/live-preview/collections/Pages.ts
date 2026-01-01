@@ -1,0 +1,217 @@
+import type { CollectionConfig } from 'payload'
+
+import { BlocksFeature, lexicalEditor } from '@payloadcms/richtext-lexical'
+
+import { Archive } from '../blocks/ArchiveBlock/index.js'
+import { CallToAction } from '../blocks/CallToAction/index.js'
+import { Content } from '../blocks/Content/index.js'
+import { MediaBlock } from '../blocks/MediaBlock/index.js'
+import { hero } from '../fields/hero.js'
+import { mediaSlug, pagesSlug, postsSlug, tenantsSlug } from '../shared.js'
+
+export const Pages: CollectionConfig = {
+  slug: pagesSlug,
+  access: {
+    read: () => true,
+    create: () => true,
+    update: () => true,
+    delete: () => true,
+  },
+  admin: {
+    description:
+      'This collections does not use drafts or autosave. Changes are sent to the iframe window in real-time to use for fully client-side rendering.',
+    useAsTitle: 'title',
+    defaultColumns: ['id', 'title', 'slug', 'createdAt'],
+    preview: (doc) => `/live-preview/${doc?.slug}`,
+  },
+  fields: [
+    {
+      name: 'slug',
+      type: 'text',
+      unique: true,
+      required: true,
+      admin: {
+        position: 'sidebar',
+      },
+    },
+    {
+      name: 'tenant',
+      type: 'relationship',
+      relationTo: tenantsSlug,
+      admin: {
+        position: 'sidebar',
+      },
+    },
+    {
+      name: 'title',
+      type: 'text',
+      required: true,
+    },
+    {
+      type: 'tabs',
+      tabs: [
+        {
+          label: 'Hero',
+          fields: [hero],
+        },
+        {
+          label: 'Content',
+          fields: [
+            {
+              name: 'layout',
+              type: 'blocks',
+              blocks: [CallToAction, Content, MediaBlock, Archive],
+            },
+          ],
+        },
+        {
+          label: 'Test',
+          fields: [
+            {
+              name: 'testNumber',
+              type: 'number',
+              label: 'Test Number Field',
+              admin: {
+                description: 'A number field for visual comparison with toolbar size inputs',
+              },
+            },
+            {
+              name: 'localizedTitle',
+              type: 'text',
+              localized: true,
+            },
+            {
+              name: 'relationToLocalized',
+              type: 'relationship',
+              relationTo: postsSlug,
+            },
+            {
+              label: 'Rich Text — Lexical',
+              type: 'richText',
+              name: 'richTextLexical',
+              editor: lexicalEditor({
+                features: ({ defaultFeatures }) => [
+                  ...defaultFeatures,
+                  BlocksFeature({ blocks: ['mediaBlock'] }),
+                ],
+              }),
+            },
+            {
+              label: 'Rich Text — Lexical — Localized',
+              type: 'richText',
+              name: 'richTextLexicalLocalized',
+              localized: true,
+              editor: lexicalEditor({
+                features: ({ defaultFeatures }) => [
+                  ...defaultFeatures,
+                  BlocksFeature({ blocks: ['mediaBlock'] }),
+                ],
+              }),
+            },
+            {
+              name: 'relationshipAsUpload',
+              type: 'upload',
+              relationTo: 'media',
+            },
+            {
+              name: 'relationshipMonoHasOne',
+              type: 'relationship',
+              relationTo: postsSlug,
+            },
+            {
+              name: 'relationshipMonoHasMany',
+              type: 'relationship',
+              relationTo: postsSlug,
+              hasMany: true,
+            },
+            {
+              name: 'relationshipPolyHasOne',
+              type: 'relationship',
+              relationTo: [postsSlug],
+            },
+            {
+              name: 'relationshipPolyHasMany',
+              type: 'relationship',
+              relationTo: [postsSlug],
+              hasMany: true,
+            },
+            {
+              name: 'arrayOfRelationships',
+              type: 'array',
+              fields: [
+                {
+                  name: 'uploadInArray',
+                  type: 'upload',
+                  relationTo: 'media',
+                },
+                {
+                  name: 'richTextInArray',
+                  type: 'richText',
+                },
+                {
+                  name: 'relationshipInArrayMonoHasOne',
+                  type: 'relationship',
+                  relationTo: postsSlug,
+                },
+                {
+                  name: 'relationshipInArrayMonoHasMany',
+                  type: 'relationship',
+                  relationTo: postsSlug,
+                  hasMany: true,
+                },
+                {
+                  name: 'relationshipInArrayPolyHasOne',
+                  type: 'relationship',
+                  relationTo: [postsSlug],
+                },
+                {
+                  name: 'relationshipInArrayPolyHasMany',
+                  type: 'relationship',
+                  relationTo: [postsSlug],
+                  hasMany: true,
+                },
+              ],
+            },
+            {
+              label: 'Named Tabs',
+              type: 'tabs',
+              tabs: [
+                {
+                  name: 'tab',
+                  label: 'Tab',
+                  fields: [
+                    {
+                      name: 'relationshipInTab',
+                      type: 'relationship',
+                      relationTo: postsSlug,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'meta',
+      type: 'group',
+      fields: [
+        {
+          name: 'title',
+          type: 'text',
+        },
+        {
+          name: 'description',
+          type: 'textarea',
+        },
+        {
+          name: 'image',
+          type: 'upload',
+          relationTo: mediaSlug,
+        },
+      ],
+    },
+  ],
+  versions: false,
+}

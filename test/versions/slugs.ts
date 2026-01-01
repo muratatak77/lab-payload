@@ -1,0 +1,91 @@
+export const autosaveCollectionSlug = 'autosave-posts'
+export const autosaveWithMultiSelectCollectionSlug = 'autosave-multi-select-posts'
+
+export const nestedArraySelectCollectionSlug = 'nested-array-select'
+
+export const autosaveWithDraftButtonSlug = 'autosave-with-draft-button-posts'
+
+export const autosaveWithDraftValidateSlug = 'autosave-with-validate-posts'
+
+export const autosaveWithVirtualSlug = 'autosave-with-virtual-posts'
+
+export const customIDSlug = 'custom-ids'
+
+export const draftCollectionSlug = 'draft-posts'
+
+export const draftsNoReadVersionsSlug = 'drafts-no-read-versions'
+
+export const draftWithValidateCollectionSlug = 'draft-with-validate-posts'
+export const draftWithMaxCollectionSlug = 'draft-with-max-posts'
+
+export const draftWithChangeHookCollectionSlug = 'draft-posts-with-change-hook'
+
+export const postCollectionSlug = 'posts'
+
+export const diffCollectionSlug = 'diff'
+export const mediaCollectionSlug = 'media'
+export const media2CollectionSlug = 'media2'
+export const draftWithUploadCollectionSlug = 'draft-with-upload'
+export const draftWithUploadCloudStorageCollectionSlug = 'draft-with-upload-cloud-storage'
+
+export const versionCollectionSlug = 'version-posts'
+export const secondaryAdminUserCollectionSlug = 'secondary-admin-users'
+
+export const disablePublishSlug = 'disable-publish'
+export const errorOnUnpublishSlug = 'error-on-unpublish'
+
+export const disablePublishGlobalSlug = 'disable-publish-global'
+
+export const textCollectionSlug = 'text'
+export const usersCollectionSlug = 'users'
+
+export const versionsDisabledCollectionSlug = 'versions-disabled-collection'
+
+export const collectionSlugs = [
+  autosaveCollectionSlug,
+  autosaveWithMultiSelectCollectionSlug,
+  autosaveWithVirtualSlug,
+  nestedArraySelectCollectionSlug,
+  draftCollectionSlug,
+  draftWithChangeHookCollectionSlug,
+  postCollectionSlug,
+  diffCollectionSlug,
+  mediaCollectionSlug,
+  media2CollectionSlug,
+  versionCollectionSlug,
+  textCollectionSlug,
+]
+
+export const autoSaveGlobalSlug = 'autosave-global'
+
+export const autosaveWithDraftButtonGlobal = 'autosave-with-draft-button-global'
+
+export const draftGlobalSlug = 'draft-global'
+
+export const simpleDraftGlobalSlug = 'simple-draft-global'
+
+export const draftUnlimitedGlobalSlug = 'draft-unlimited-global'
+
+export const draftWithMaxGlobalSlug = 'draft-with-max-global'
+
+export const restoreAccessGlobalSlug = 'restore-access-global'
+
+export const restoreAccessNoVersionsGlobalSlug = 'restore-access-no-versions-global'
+
+export const versionsDisabledGlobalSlug = 'versions-disabled-global'
+
+export const restoreAccessCollectionSlug = 'restore-access'
+
+export const restoreAccessLocalizedCollectionSlug = 'restore-access-localized'
+
+export const globalSlugs = [
+  autoSaveGlobalSlug,
+  draftGlobalSlug,
+  simpleDraftGlobalSlug,
+  draftUnlimitedGlobalSlug,
+  draftWithMaxGlobalSlug,
+]
+
+export const localizedCollectionSlug = 'localized-posts'
+
+export const localizedGlobalSlug = 'localized-global'

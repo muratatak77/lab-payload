@@ -1,0 +1,428 @@
+import type { Payload } from 'payload'
+
+import { buildEditorState } from '@payloadcms/richtext-lexical'
+import path from 'path'
+import { getFileByPath } from 'payload'
+import { fileURLToPath } from 'url'
+
+import { seedDB } from '../__helpers/shared/clearAndSeed/seed.js'
+import { getTestSuiteDir } from '../__helpers/shared/getTestSuiteDir.js'
+import { devUser } from '../credentials.js'
+import { arrayDoc } from './collections/Array/shared.js'
+import { blocksDoc } from './collections/Blocks/shared.js'
+import { codeDoc } from './collections/Code/shared.js'
+import { collapsibleDoc } from './collections/Collapsible/shared.js'
+import { conditionalLogicDoc } from './collections/ConditionalLogic/shared.js'
+import { customRowID, customTabID, nonStandardID } from './collections/CustomID/shared.js'
+import { dateDoc } from './collections/Date/shared.js'
+import { anotherEmailDoc, emailDoc } from './collections/Email/shared.js'
+import { namedGroupDoc } from './collections/Group/shared.js'
+import { jsonDoc } from './collections/JSON/shared.js'
+import { numberDoc } from './collections/Number/shared.js'
+import { pointDoc } from './collections/Point/shared.js'
+import { radiosDoc } from './collections/Radio/shared.js'
+import { selectsDoc } from './collections/Select/shared.js'
+import { slugFieldDoc } from './collections/SlugField/shared.js'
+import { tabsDoc } from './collections/Tabs/shared.js'
+import { anotherTextDoc, textDoc } from './collections/Text/shared.js'
+import { anotherTextareaDoc, textareaDoc } from './collections/Textarea/shared.js'
+import { uploadsDoc } from './collections/Upload/shared.js'
+import {
+  arrayFieldsSlug,
+  blockFieldsSlug,
+  checkboxFieldsSlug,
+  codeFieldsSlug,
+  collapsibleFieldsSlug,
+  collectionSlugs,
+  conditionalLogicSlug,
+  customIDSlug,
+  customRowIDSlug,
+  customTabIDSlug,
+  dateFieldsSlug,
+  emailFieldsSlug,
+  groupFieldsSlug,
+  jsonFieldsSlug,
+  numberFieldsSlug,
+  pointFieldsSlug,
+  radioFieldsSlug,
+  relationshipFieldsSlug,
+  selectFieldsSlug,
+  slugFieldsSlug,
+  tabsFieldsSlug,
+  textareaFieldsSlug,
+  textFieldsSlug,
+  uiSlug,
+  uploadsMulti,
+  uploadsPoly,
+  uploadsSlug,
+  usersSlug,
+} from './slugs.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+export const seed = async (_payload: Payload) => {
+  const fieldsDir = getTestSuiteDir({ fallbackDir: dirname, suitePath: 'fields' })
+  const jpgPath = path.resolve(fieldsDir, './collections/Upload/payload.jpg')
+  const jpg480x320Path = path.resolve(fieldsDir, './collections/Upload/payload480x320.jpg')
+  const pngPath = path.resolve(fieldsDir, './uploads/payload.png')
+  const png20x20Path = path.resolve(fieldsDir, './collections/Upload/payload20x20.png')
+
+  const [jpgFile, jpg480x320File, pngFile, png20x20File] = await Promise.all([
+    getFileByPath(jpgPath),
+    getFileByPath(jpg480x320Path),
+    getFileByPath(pngPath),
+    getFileByPath(png20x20Path),
+  ])
+
+  const createdArrayDoc = await _payload.create({
+    collection: arrayFieldsSlug,
+    data: arrayDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdTextDoc = await _payload.create({
+    collection: textFieldsSlug,
+    data: textDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdAnotherTextDoc = await _payload.create({
+    collection: textFieldsSlug,
+    data: anotherTextDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdTextareaDoc = await _payload.create({
+    collection: textareaFieldsSlug,
+    data: textareaDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdAnotherTextareaDoc = await _payload.create({
+    collection: textareaFieldsSlug,
+    data: anotherTextareaDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdSlugDoc = await _payload.create({
+    collection: slugFieldsSlug,
+    data: slugFieldDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const createdPNGDoc = await _payload.create({
+    collection: uploadsSlug,
+    data: {},
+    depth: 0,
+    file: pngFile,
+    overrideAccess: true,
+  })
+
+  const createdJPGDoc = await _payload.create({
+    collection: uploadsSlug,
+    data: {
+      ...uploadsDoc,
+      media: createdPNGDoc.id,
+    },
+    depth: 0,
+    file: jpgFile,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: uploadsSlug,
+    data: {},
+    depth: 0,
+    file: jpg480x320File,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: uploadsSlug,
+    data: {},
+    depth: 0,
+    file: png20x20File,
+    overrideAccess: true,
+  })
+
+  // const createdJPGDocSlug2 = await _payload.create({
+  //   collection: uploads2Slug,
+  //   data: {
+  //     ...uploadsDoc,
+  //   },
+  //   file: jpgFile,
+  //   depth: 0,
+  //   overrideAccess: true,
+  // })
+
+  // Create hasMany upload
+  await _payload.create({
+    collection: uploadsMulti,
+    data: {
+      media: [createdPNGDoc.id],
+    },
+    overrideAccess: true,
+  })
+
+  // Create hasMany poly upload
+  // await _payload.create({
+  //   collection: uploadsMultiPoly,
+  //   data: {
+  //     media: [
+  //       { value: createdJPGDocSlug2.id, relationTo: uploads2Slug },
+  //       { value: createdJPGDoc.id, relationTo: uploadsSlug },
+  //     ],
+  //   },
+  // })
+
+  // Create poly upload
+  await _payload.create({
+    collection: uploadsPoly,
+    data: {
+      media: { relationTo: uploadsSlug, value: createdJPGDoc.id },
+    },
+    overrideAccess: true,
+  })
+  // Create poly upload
+  // await _payload.create({
+  //   collection: uploadsPoly,
+  //   data: {
+  //     media: { value: createdJPGDocSlug2.id, relationTo: uploads2Slug },
+  //   },
+  // })
+  const blocksDocWithRichText = {
+    ...(blocksDoc as any),
+  }
+
+  const blockRichText = buildEditorState({ text: 'I can do all kinds of fun stuff' })
+
+  blocksDocWithRichText.blocks[0].richText = blockRichText
+  blocksDocWithRichText.localizedBlocks[0].richText = blockRichText
+
+  await _payload.create({
+    collection: emailFieldsSlug,
+    data: emailDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: emailFieldsSlug,
+    data: anotherEmailDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: usersSlug,
+    data: {
+      email: devUser.email,
+      password: devUser.password,
+    },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: collapsibleFieldsSlug,
+    data: collapsibleDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: conditionalLogicSlug,
+    data: conditionalLogicDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: groupFieldsSlug,
+    data: namedGroupDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: selectFieldsSlug,
+    data: selectsDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: radioFieldsSlug,
+    data: radiosDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: tabsFieldsSlug,
+    data: tabsDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: pointFieldsSlug,
+    data: pointDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: dateFieldsSlug,
+    data: dateDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: checkboxFieldsSlug,
+    data: {
+      checkbox: true,
+    },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: checkboxFieldsSlug,
+    data: {
+      checkbox: false,
+    },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: codeFieldsSlug,
+    data: codeDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: jsonFieldsSlug,
+    data: jsonDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: blockFieldsSlug,
+    data: blocksDocWithRichText,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  const relationshipField1 = await _payload.create({
+    collection: relationshipFieldsSlug,
+    data: {
+      relationship: {
+        relationTo: textFieldsSlug,
+        value: createdTextDoc.id,
+      },
+      text: 'Relationship 1',
+    },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  try {
+    await _payload.create({
+      collection: relationshipFieldsSlug,
+      data: {
+        relationship: {
+          relationTo: textFieldsSlug,
+          value: createdAnotherTextDoc.id,
+        },
+        relationToSelf: relationshipField1.id,
+        text: 'Relationship 2',
+      },
+      depth: 0,
+      overrideAccess: true,
+    })
+  } catch (e) {
+    console.error(e)
+  }
+
+  await _payload.create({
+    collection: numberFieldsSlug,
+    data: { number: 2 },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: numberFieldsSlug,
+    data: { number: 3 },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: numberFieldsSlug,
+    data: numberDoc,
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await _payload.create({
+    collection: uiSlug,
+    data: {
+      text: 'text',
+    },
+    depth: 0,
+    overrideAccess: true,
+  })
+
+  await Promise.all([
+    _payload.create({
+      collection: customIDSlug,
+      data: {
+        id: nonStandardID,
+      },
+      depth: 0,
+      overrideAccess: true,
+    }),
+    _payload.create({
+      collection: customTabIDSlug,
+      data: {
+        id: customTabID,
+      },
+      depth: 0,
+      overrideAccess: true,
+    }),
+    _payload.create({
+      collection: customRowIDSlug,
+      data: {
+        id: customRowID,
+      },
+      depth: 0,
+      overrideAccess: true,
+    }),
+  ])
+}
+
+export async function clearAndSeedEverything(_payload: Payload) {
+  return await seedDB({
+    _payload,
+    collectionSlugs,
+    seedFunction: seed,
+    snapshotKey: 'fieldsTest',
+    uploadsDir: path.resolve(
+      getTestSuiteDir({ fallbackDir: dirname, suitePath: 'fields' }),
+      './collections/Upload/uploads',
+    ),
+  })
+}

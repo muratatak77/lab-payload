@@ -1,0 +1,144 @@
+import type { ImportMap } from '../../cli/commands/generateImportMap/generateImportMap.js'
+import type { Locale, SanitizedConfig } from '../../config/types.js'
+import type { PaginatedDocs } from '../../database/types.js'
+import type { Slugify } from '../../fields/baseFields/slug/types.js'
+import type {
+  CollectionSlug,
+  ColumnPreference,
+  DefaultDocumentIDType,
+  FieldPaths,
+  GlobalSlug,
+  SanitizedPermissions,
+} from '../../index.js'
+import type { PayloadRequest, Sort, Where } from '../../types/index.js'
+import type { ColumnsFromURL } from '../../utilities/transformColumnPreferences.js'
+import type { ComponentRenderer } from '../adapters/render.js'
+
+export type AdminContext = {
+  cookies: Map<string, string>
+  locale?: Locale
+  permissions: SanitizedPermissions
+  req: PayloadRequest
+  /** The authenticated user after read access for client-facing consumers. */
+  user?: PayloadRequest['user']
+}
+
+export type DefaultServerFunctionArgs = {
+  importMap: ImportMap
+  renderComponent?: ComponentRenderer
+} & Pick<AdminContext, 'cookies' | 'locale' | 'permissions' | 'req' | 'user'>
+
+export type ServerFunctionArgs = {
+  args: Record<string, unknown>
+  name: string
+}
+
+export type ServerFunctionClientArgs = {
+  args: Record<string, unknown>
+  name: string
+}
+
+export type ServerFunctionClient = (args: ServerFunctionClientArgs) => Promise<unknown> | unknown
+
+export type ServerFunction<
+  TArgs extends object = Record<string, unknown>,
+  TReturnType = Promise<unknown> | unknown,
+> = (args: DefaultServerFunctionArgs & TArgs) => TReturnType
+
+export type ServerFunctionConfig = {
+  fn: ServerFunction
+  name: string
+}
+
+export type ServerFunctionHandler = (
+  args: {
+    config: Promise<SanitizedConfig> | SanitizedConfig
+    importMap: ImportMap
+    /**
+     * A map of server function names to their implementations. These are
+     * registered alongside the base server functions and can be called
+     * using the useServerFunctions() hook.
+     *
+     * @example
+     * const { serverFunction } = useServerFunctions()
+     *
+     * const callServerFunction = useCallback(() => {
+     *
+     *  async function call() {
+     *   const result = (await serverFunction({
+     *    name: 'record-key',
+     *    args: {
+     *     // Your args
+     *    },
+     *   }))
+     *
+     *   // Do someting with the result
+     *  }
+     *
+     *  void call()
+     * }, [serverFunction])
+     */
+    serverFunctions?: Record<string, ServerFunction<any, any>>
+  } & ServerFunctionClientArgs,
+) => Promise<unknown>
+
+export type ListQuery = {
+  /*
+   * This is an of strings, i.e. `['title', '-slug']`
+   * Use `transformColumnsToPreferences` and `transformColumnsToSearchParams` to convert it back and forth
+   */
+  columns?: ColumnsFromURL
+  /*
+   * A string representing the field to group by, e.g. `category`
+   * A leading hyphen represents descending order, e.g. `-category`
+   */
+  groupBy?: string
+  limit?: number
+  page?: number
+  preset?: number | string
+  queryByGroup?: Record<string, ListQuery>
+  /*
+    When provided, is automatically injected into the `where` object
+  */
+  search?: string
+  sort?: Sort
+  where?: Where
+} & Record<string, unknown>
+
+export type BuildTableStateArgs = {
+  /**
+   * If an array is provided, the table will be built to support polymorphic collections.
+   */
+  collectionSlug: string | string[]
+  columns?: ColumnPreference[]
+  data?: PaginatedDocs
+  /**
+   * @deprecated Use `data` instead
+   */
+  docs?: PaginatedDocs['docs']
+  enableRowSelections?: boolean
+  orderableFieldName: string
+  parent?: {
+    collectionSlug: CollectionSlug
+    id: number | string
+    joinPath: string
+  }
+  query?: ListQuery
+  renderRowTypes?: boolean
+  tableAppearance?: 'condensed' | 'default'
+}
+
+export type SlugifyServerFunctionArgs = {
+  collectionSlug?: CollectionSlug
+  globalSlug?: GlobalSlug
+  /**
+   * Current doc ID, needed to exclude this doc from uniqueness checks.
+   * This ensures that this doc can reuse its own slug rather than bumping past itself when regenerating.
+   */
+  id?: DefaultDocumentIDType
+  /**
+   * Active admin locale, so a localized slug's fallback is deduped within the right locale.
+   */
+  locale?: Locale['code']
+  path?: FieldPaths['path']
+} & Omit<Parameters<Slugify>[0], 'req'>

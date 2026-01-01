@@ -1,0 +1,172 @@
+import * as fs from 'fs'
+
+import type { DatabaseAdapter, StorageAdapter } from './types.js'
+
+import { debug } from '../../utils/log.js'
+import {
+  getDbPackageName,
+  getStoragePackageName,
+  SHARP_TRANSFORMER_PACKAGE,
+} from './adapter-config.js'
+import { ALL_DATABASE_ADAPTERS, ALL_STORAGE_ADAPTERS } from './types.js'
+
+type PackageJsonTransformOptions = {
+  addDependencies?: Record<string, string>
+  databaseAdapter?: DatabaseAdapter
+  packageName?: string
+  removeDependencies?: string[]
+  removeSharp?: boolean
+  storageAdapter?: StorageAdapter
+}
+
+type PackageJsonStructure = {
+  [key: string]: unknown
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+  name?: string
+}
+
+/**
+ * Main orchestration function
+ */
+export function updatePackageJson(filePath: string, options: PackageJsonTransformOptions): void {
+  debug(`[AST] Updating package.json: ${filePath}`)
+
+  const prepared = preparePackageJson({ filePath, options })
+  fs.writeFileSync(prepared.filePath, prepared.content)
+
+  debug('[AST] ✓ package.json updated successfully')
+}
+
+export function preparePackageJson({
+  filePath,
+  options,
+}: {
+  filePath: string
+  options: PackageJsonTransformOptions
+}): { content: string; filePath: string } {
+  const pkg = parsePackageJson(filePath)
+  const transformed = transformPackageJson(pkg, options)
+
+  return {
+    content: `${JSON.stringify(transformed, null, 2)}\n`,
+    filePath,
+  }
+}
+
+// Helper functions
+
+function parsePackageJson(filePath: string): PackageJsonStructure {
+  const content = fs.readFileSync(filePath, 'utf-8')
+  return JSON.parse(content)
+}
+
+/**
+ *  Transforms the package.json based upon provided options
+ */
+function transformPackageJson(
+  pkg: PackageJsonStructure,
+  options: PackageJsonTransformOptions,
+): PackageJsonStructure {
+  const transformed = { ...pkg }
+
+  // Update database adapter
+  if (options.databaseAdapter) {
+    debug(`[AST] Updating package.json database adapter to: ${options.databaseAdapter}`)
+
+    transformed.dependencies = { ...transformed.dependencies }
+
+    const removedAdapters: string[] = []
+    ALL_DATABASE_ADAPTERS.forEach((adapter) => {
+      const pkgName = getDbPackageName(adapter)
+      if (transformed.dependencies![pkgName]) {
+        removedAdapters.push(pkgName)
+      }
+      delete transformed.dependencies![pkgName]
+    })
+
+    if (removedAdapters.length > 0) {
+      debug(`[AST] Removed old adapter packages: ${removedAdapters.join(', ')}`)
+    }
+
+    // Add new adapter
+    const dbAdapterPackageName = getDbPackageName(options.databaseAdapter)
+    const payloadVersion = transformed.dependencies?.payload || '^3.0.0'
+    transformed.dependencies[dbAdapterPackageName] = payloadVersion
+
+    debug(`[AST] Added adapter package: ${dbAdapterPackageName}`)
+  }
+
+  // Update storage adapter
+  if (options.storageAdapter) {
+    debug(`[AST] Updating package.json storage adapter to: ${options.storageAdapter}`)
+
+    transformed.dependencies = { ...transformed.dependencies }
+
+    const removedAdapters: string[] = []
+    ALL_STORAGE_ADAPTERS.forEach((adapter) => {
+      const pkgName = getStoragePackageName(adapter)
+      if (pkgName && transformed.dependencies![pkgName]) {
+        removedAdapters.push(pkgName)
+      }
+      if (pkgName) {
+        delete transformed.dependencies![pkgName]
+      }
+    })
+
+    if (removedAdapters.length > 0) {
+      debug(`[AST] Removed old storage adapter packages: ${removedAdapters.join(', ')}`)
+    }
+
+    // Add new storage adapter (if not localDisk)
+    const storagePackageName = getStoragePackageName(options.storageAdapter)
+    if (storagePackageName) {
+      const payloadVersion = transformed.dependencies?.payload || '^3.0.0'
+      transformed.dependencies[storagePackageName] = payloadVersion
+      debug(`[AST] Added storage adapter package: ${storagePackageName}`)
+    } else {
+      debug(`[AST] Storage adapter is localDisk, no package needed`)
+    }
+  }
+
+  // Remove sharp
+  if (options.removeSharp && transformed.dependencies) {
+    transformed.dependencies = { ...transformed.dependencies }
+    for (const sharpPackage of ['sharp', SHARP_TRANSFORMER_PACKAGE]) {
+      if (transformed.dependencies[sharpPackage]) {
+        delete transformed.dependencies[sharpPackage]
+        debug(`[AST] Removed ${sharpPackage} dependency`)
+      } else {
+        debug(`[AST] ${sharpPackage} dependency not found (already absent)`)
+      }
+    }
+  }
+
+  if (options.addDependencies) {
+    transformed.dependencies = {
+      ...transformed.dependencies,
+      ...options.addDependencies,
+    }
+  }
+
+  if (options.removeDependencies) {
+    for (const dependencyGroup of ['dependencies', 'devDependencies'] as const) {
+      if (!transformed[dependencyGroup]) {
+        continue
+      }
+
+      transformed[dependencyGroup] = { ...transformed[dependencyGroup] }
+      for (const packageName of options.removeDependencies) {
+        delete transformed[dependencyGroup][packageName]
+      }
+    }
+  }
+
+  // Update package name
+  if (options.packageName) {
+    debug(`[AST] Updated package name to: ${options.packageName}`)
+    transformed.name = options.packageName
+  }
+
+  return transformed
+}

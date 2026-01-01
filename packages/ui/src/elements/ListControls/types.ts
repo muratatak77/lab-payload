@@ -1,0 +1,34 @@
+import type {
+  ClientCollectionConfig,
+  QueryPreset,
+  ResolvedFilterOptions,
+  SanitizedCollectionPermission,
+  ViewTypes,
+  Where,
+} from 'payload'
+
+export type ListControlsProps = {
+  readonly beforeActions?: React.ReactNode[]
+  readonly collectionConfig: ClientCollectionConfig
+  readonly collectionSlug: string
+  readonly disableQueryPresets?: boolean
+  readonly enableColumns?: boolean
+  readonly enableFilters?: boolean
+  readonly enableSort?: boolean
+  readonly handleSearchChange?: (search: string) => void
+  readonly handleSortChange?: (sort: string) => void
+  readonly handleWhereChange?: (where: Where) => void
+  readonly hasCreatePermission?: boolean
+  readonly hasDeletePermission?: boolean
+  readonly isWhereOpen?: boolean
+  readonly layoutToggle?: React.ReactNode
+  readonly listMenuItems?: React.ReactNode[]
+  readonly newDocumentURL?: string
+  readonly onWhereToggle?: () => void
+  readonly queryPreset?: QueryPreset
+  readonly queryPresetPermissions?: SanitizedCollectionPermission
+  readonly renderedFilters?: Map<string, React.ReactNode>
+  readonly resolvedFilterOptions?: Map<string, ResolvedFilterOptions>
+  readonly viewType?: ViewTypes
+  readonly wherePanelID?: string
+}

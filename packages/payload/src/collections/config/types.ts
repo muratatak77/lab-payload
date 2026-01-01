@@ -1,0 +1,952 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { GraphQLInputObjectType, GraphQLNonNull, GraphQLObjectType } from 'graphql'
+import type { IsAny, MarkOptional } from 'ts-essentials'
+
+import type { CustomUpload, ViewTypes } from '../../admin/types.js'
+import type { Arguments as MeArguments } from '../../auth/operations/me.js'
+import type {
+  Arguments as RefreshArguments,
+  Result as RefreshResult,
+} from '../../auth/operations/refresh.js'
+import type { Auth, IncomingAuthType } from '../../auth/types.js'
+import type {
+  Access,
+  AfterErrorHookArgs,
+  AfterErrorResult,
+  CustomComponent,
+  Endpoint,
+  EntityDescription,
+  GeneratePreviewURL,
+  LabelFunction,
+  LivePreviewConfig,
+  MetaConfig,
+  PayloadComponent,
+  SharedAdminComponents,
+  SharedEditViewComponents,
+  SharedEntityViews,
+  StaticLabel,
+} from '../../config/types.js'
+import type { DBIdentifierName } from '../../database/types.js'
+import type { Authorship, SanitizedAuthorship } from '../../fields/baseFields/authorship/types.js'
+import type {
+  Field,
+  FlattenedField,
+  JoinField,
+  RelationshipField,
+  UploadField,
+} from '../../fields/config/types.js'
+import type {
+  HierarchyConfig,
+  HierarchyJoinFieldConfig,
+  SanitizedHierarchyConfig,
+} from '../../hierarchy/types.js'
+import type {
+  CollectionAdminCustom,
+  CollectionCustom,
+  CollectionSlug,
+  GeneratedTypes,
+  JsonObject,
+  RequestContext,
+  TypedAuthOperations,
+  TypedCollection,
+  TypedCollectionSelect,
+  TypedLocale,
+} from '../../index.js'
+import type {
+  PayloadRequest,
+  SelectIncludeType,
+  SelectType,
+  Sort,
+  TransformCollectionWithSelect,
+  Where,
+  WithSelectFn,
+} from '../../types/index.js'
+import type { SanitizedUploadConfig, UploadConfig } from '../../uploads/types.js'
+import type {
+  IncomingCollectionVersions,
+  SanitizedCollectionVersions,
+} from '../../versions/types.js'
+import type {
+  AfterOperationArg,
+  BeforeOperationArg,
+  OperationMap,
+} from '../operations/utilities/types.js'
+
+export type DataFromCollectionSlug<TSlug extends CollectionSlug> =
+  TypedCollection[string extends CollectionSlug ? CollectionSlug : TSlug]
+
+/**
+ * The ID type of a given collection (e.g. `string` or `number`), taken from its generated type.
+ * Use this instead of the project-wide {@link DefaultDocumentIDType} when the collection slug is
+ * known, since each collection can have its own ID type.
+ */
+export type IDTypeForCollectionSlug<TSlug extends CollectionSlug> =
+  DataFromCollectionSlug<TSlug>['id']
+
+export type SelectFromCollectionSlug<TSlug extends CollectionSlug> = TypedCollectionSelect[TSlug]
+
+/**
+ * Collection slugs that do not have drafts enabled.
+ * Detects collections without drafts by checking for the absence of the `_status` field.
+ */
+export type CollectionsWithoutDrafts = {
+  [TSlug in CollectionSlug]: DataFromCollectionSlug<TSlug> extends { _status?: any } ? never : TSlug
+}[CollectionSlug]
+
+/**
+ * Conditionally allows or forbids the `draft` property based on collection configuration.
+ * When `strictDraftTypes` is enabled, the `draft` property is forbidden on collections without drafts.
+ */
+export type DraftFlagFromCollectionSlug<TSlug extends CollectionSlug> = GeneratedTypes extends {
+  strictDraftTypes: true
+}
+  ? TSlug extends CollectionsWithoutDrafts
+    ? {
+        /**
+         * The `draft` property is not allowed because this collection does not have `versions.drafts` enabled.
+         */
+        draft?: never
+      }
+    : {
+        /**
+         * Whether the document(s) should be queried from the versions table/collection or not. [More](https://payloadcms.com/docs/versions/drafts#draft-api)
+         */
+        draft?: boolean
+      }
+  : {
+      /**
+       * Whether the document(s) should be queried from the versions table/collection or not. [More](https://payloadcms.com/docs/versions/drafts#draft-api)
+       */
+      draft?: boolean
+    }
+
+export type AuthOperationsFromCollectionSlug<TSlug extends CollectionSlug> =
+  TypedAuthOperations[TSlug]
+
+export type RequiredDataFromCollection<TData extends JsonObject> = MarkOptional<
+  TData,
+  'collection' | 'createdAt' | 'deletedAt' | 'id' | 'updatedAt'
+>
+
+export type RequiredDataFromCollectionSlug<TSlug extends CollectionSlug> =
+  RequiredDataFromCollection<DataFromCollectionSlug<TSlug>>
+
+/**
+ * Helper type for draft data INPUT (e.g., create operations) - makes all fields optional except system fields
+ * When creating a draft, required fields don't need to be provided as validation is skipped
+ * The id field is optional since it's auto-generated
+ */
+export type DraftDataFromCollection<TData extends JsonObject> = Partial<
+  Omit<TData, 'collection' | 'createdAt' | 'deletedAt' | 'id' | 'updatedAt' | 'variants'>
+> &
+  Partial<Pick<TData, 'collection' | 'createdAt' | 'deletedAt' | 'id' | 'updatedAt' | 'variants'>>
+
+export type DraftDataFromCollectionSlug<TSlug extends CollectionSlug> = DraftDataFromCollection<
+  DataFromCollectionSlug<TSlug>
+>
+
+/**
+ * Helper type for draft data OUTPUT (e.g., query results) - makes user fields optional but keeps id required
+ * When querying drafts, required fields may be null/undefined as validation is skipped, but system fields like id are always present
+ */
+export type QueryDraftDataFromCollection<TData extends JsonObject> = Partial<
+  Omit<TData, 'createdAt' | 'deletedAt' | 'id' | 'updatedAt' | 'variants'>
+> &
+  Partial<Pick<TData, 'createdAt' | 'deletedAt' | 'updatedAt' | 'variants'>> &
+  Pick<TData, 'id'>
+
+export type QueryDraftDataFromCollectionSlug<TSlug extends CollectionSlug> =
+  QueryDraftDataFromCollection<DataFromCollectionSlug<TSlug>>
+
+export type HookOperationType =
+  | 'autosave'
+  | 'count'
+  | 'countVersions'
+  | 'create'
+  | 'delete'
+  | 'forgotPassword'
+  | 'login'
+  | 'read'
+  | 'readDistinct'
+  | 'refresh'
+  | 'resetPassword'
+  | 'restoreVersion'
+  | 'update'
+  | 'validate'
+
+type CreateOrUpdateOperation = Extract<HookOperationType, 'create' | 'update'>
+type CreateUpdateOrValidateOperation = Extract<HookOperationType, 'create' | 'update' | 'validate'>
+
+export type BeforeOperationHook<TOperationGeneric extends CollectionSlug = string> = (
+  arg: BeforeOperationArg<TOperationGeneric>,
+) =>
+  | Parameters<OperationMap<TOperationGeneric>[keyof OperationMap<TOperationGeneric>]>[0]
+  | Promise<Parameters<OperationMap<TOperationGeneric>[keyof OperationMap<TOperationGeneric>]>[0]>
+  | Promise<void>
+  | void
+
+export type BeforeValidateHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  data?: Partial<T>
+  /**
+   * Hook operation being performed
+   */
+  operation: CreateUpdateOrValidateOperation
+  /**
+   * Original document before change
+   *
+   * `undefined` on 'create' operation
+   */
+  originalDoc?: T
+  req: PayloadRequest
+}) => any
+
+export type BeforeChangeHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  data: Partial<T>
+  /**
+   * Hook operation being performed
+   */
+  operation: CreateUpdateOrValidateOperation
+  /**
+   * Original document before change
+   *
+   * `undefined` on 'create' operation
+   */
+  originalDoc?: T
+  req: PayloadRequest
+}) => any
+
+export type AfterChangeHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  data: Partial<T>
+  doc: T
+  /**
+   * Hook operation being performed
+   */
+  operation: CreateOrUpdateOperation
+  /**
+   * Whether access control is being overridden for this operation
+   */
+  overrideAccess?: boolean
+  previousDoc: T
+  req: PayloadRequest
+  /** Resolved field selection for the operation's response. */
+  select?: SelectType
+}) => any
+
+export type BeforeReadHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  doc: T
+  /**
+   * Whether access control is being overridden for this operation
+   */
+  overrideAccess?: boolean
+  query: { [key: string]: any }
+  req: PayloadRequest
+}) => any
+
+export type AfterReadHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  doc: T
+  findMany?: boolean
+  /**
+   * Whether access control is being overridden for this operation
+   */
+  overrideAccess?: boolean
+  query?: { [key: string]: any }
+  req: PayloadRequest
+}) => any
+
+export type BeforeDeleteHook = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  id: number | string
+  req: PayloadRequest
+}) => any
+
+export type AfterDeleteHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  doc: T
+  id: number | string
+  req: PayloadRequest
+}) => any
+
+export type AfterOperationHook<TOperationGeneric extends CollectionSlug = string> = (
+  arg: AfterOperationArg<TOperationGeneric>,
+) =>
+  | Awaited<ReturnType<OperationMap<TOperationGeneric>[keyof OperationMap<TOperationGeneric>]>>
+  | Promise<
+      Awaited<ReturnType<OperationMap<TOperationGeneric>[keyof OperationMap<TOperationGeneric>]>>
+    >
+
+export type BeforeLoginHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  req: PayloadRequest
+  user: T
+}) => any
+
+export type AfterLoginHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  req: PayloadRequest
+  token: string
+  user: T
+}) => any
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type AfterLogoutHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  req: PayloadRequest
+}) => any
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type AfterMeHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  req: PayloadRequest
+  response: unknown
+}) => any
+
+export type RefreshHook<T extends TypeWithID = any> = (args: {
+  args: RefreshArguments
+  user: T
+}) => Promise<RefreshResult | void> | (RefreshResult | void)
+
+export type MeHook<T extends TypeWithID = any> = (args: {
+  args: MeArguments
+  user: T
+}) => ({ exp: number; user: T } | void) | Promise<{ exp: number; user: T } | void>
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type AfterRefreshHook<T extends TypeWithID = any> = (args: {
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+  exp: number
+  req: PayloadRequest
+  token: string
+}) => any
+
+export type AfterErrorHook = (
+  args: { collection: SanitizedCollectionConfig } & AfterErrorHookArgs,
+) => AfterErrorResult | Promise<AfterErrorResult>
+
+export type AfterForgotPasswordHook = (args: {
+  args?: any
+  /** The collection which this hook is being run on */
+  collection: SanitizedCollectionConfig
+  context: RequestContext
+}) => any
+
+export type EnableFoldersOptions = {
+  // Displays the folder collection and parentFolder field in the document view
+  debug?: boolean
+}
+
+/**
+ * Configuration options for folder hierarchy preset.
+ * Subset of HierarchyConfig with folder-appropriate defaults applied.
+ */
+export type FoldersConfig = {
+  admin?: {
+    components?: {
+      Icon?: PayloadComponent
+    }
+    injectSidebarTab?: boolean
+    treeLimit?: number
+    useHeaderButton?: boolean
+  }
+  collectionSpecific?:
+    | {
+        fieldName?: string
+      }
+    | boolean
+  joinField?: HierarchyJoinFieldConfig
+  parentFieldName?: string
+  slugField?: string
+  slugify?: (text: string) => string
+  slugPathFieldName?: string
+  titlePathFieldName?: string
+}
+
+/**
+ * Configuration options for tags hierarchy preset.
+ * Same as FoldersConfig but allowHasMany can be overridden.
+ */
+export type TagsConfig = {
+  allowHasMany?: boolean
+} & FoldersConfig
+
+export type BaseFilter = (args: {
+  limit: number
+  locale?: TypedLocale
+  page: number
+  req: PayloadRequest
+  sort: string
+}) => null | Promise<null | Where> | Where
+
+/**
+ * @deprecated Use `BaseFilter` instead.
+ */
+export type BaseListFilter = BaseFilter
+
+export type CollectionAdminOptions = {
+  /**
+   * Defines a default base filter which will be applied in the following parts of the admin panel:
+   * - List View
+   * - Relationship fields for internal links within the Lexical editor
+   *
+   * This is especially useful for plugins like multi-tenant. For example,
+   * a user may have access to multiple tenants, but should only see content
+   * related to the currently active or selected tenant in those places.
+   */
+  baseFilter?: BaseFilter
+  /**
+   * @deprecated Use `baseFilter` instead. If both are defined,
+   * `baseFilter` will take precedence. This property remains only
+   * for backward compatibility and may be removed in a future version.
+   *
+   * Originally, `baseListFilter` was intended to filter only the List View
+   * in the admin panel. However, base filtering is often required in other areas
+   * such as internal link relationships in the Lexical editor.
+   */
+  baseListFilter?: BaseListFilter
+  /**
+   * Custom admin components
+   */
+  components?: {
+    afterList?: CustomComponent[]
+    afterListTable?: CustomComponent[]
+    beforeList?: CustomComponent[]
+    beforeListTable?: CustomComponent[]
+    /**
+     * Components within the edit view
+     */
+    edit?: {
+      /**
+       * Replaces the "Upload" section
+       * + upload must be enabled
+       */
+      Upload?: CustomUpload
+    } & SharedEditViewComponents
+    listMenuItems?: CustomComponent[]
+    views?: {
+      /**
+       * Replace or modify the "list" view.
+       * @link https://payloadcms.com/docs/custom-components/list-view
+       */
+      list?: {
+        actions?: CustomComponent[]
+        Component?: PayloadComponent
+        NoResults?: CustomComponent
+      }
+    } & SharedEntityViews
+  } & Omit<SharedAdminComponents, 'edit' | 'views'>
+  /** Extension point to add your custom data. Available in server and client. */
+  custom?: CollectionAdminCustom
+  /**
+   * Default columns to show in list view
+   */
+  defaultColumns?: string[]
+  /**
+   * Custom description for collection. This will also be used as JSDoc for the generated types
+   */
+  description?: EntityDescription
+  /**
+   * Disable the Copy To Locale button in the edit document view
+   * @default false
+   */
+  disableCopyToLocale?: boolean
+  enableRichTextLink?: boolean
+  enableRichTextRelationship?: boolean
+  /**
+   * Function to format the URL for document links in the list view.
+   * Return null to disable linking for that document.
+   * Return a string to customize the link destination.
+   * If not provided, uses the default admin edit URL.
+   */
+  formatDocURL?: (args: {
+    collectionSlug: string
+    /**
+     * The default URL that would normally be used for this document link.
+     * You can return this as-is, modify it, or completely replace it.
+     */
+    defaultURL: string
+    doc: Record<string, unknown>
+    req: PayloadRequest
+    /**
+     * The current view context where the link is being generated.
+     * Most relevant values for document linking are 'list' and 'trash'.
+     */
+    viewType?: ViewTypes
+  }) => null | string
+  /**
+   * Specify a navigational group for collections in the admin sidebar.
+   * - Provide a string to place the entity in a custom group.
+   * - Provide a record to define localized group names.
+   * - Set to `false` to exclude the collection from the sidebar, command palette, dashboard collection cards,
+   *   and pin picker, and its documents from both the Pinned and Recently viewed dashboard tabs, including existing pins.
+   * This does not disable routes or change access control or rich text link and relationship eligibility.
+   * Use `enableRichTextLink` and `enableRichTextRelationship` to configure rich text eligibility separately.
+   */
+  group?: false | Record<string, string> | string
+  /**
+   * Exclude the collection from the admin nav and routes
+   */
+  hidden?: ((args: { user: PayloadRequest['user'] }) => boolean) | boolean
+  /**
+   * Additional fields to be searched via the full text search
+   */
+  listSearchableFields?: string[]
+  /**
+   * Live Preview options.
+   *
+   * @see https://payloadcms.com/docs/live-preview/overview
+   */
+  livePreview?: LivePreviewConfig
+  meta?: MetaConfig
+  pagination?: {
+    defaultLimit?: number
+    limits?: number[]
+  }
+  /**
+   * Function to generate custom preview URL
+   */
+  preview?: GeneratePreviewURL
+  /**
+   * Field to use as the thumbnail image in grid/card views. Defaults to the first field of type `upload`.
+   */
+  useAsThumbnail?: string
+  /**
+   * Field to use as title in Edit View and first column in List view
+   */
+  useAsTitle?: string
+}
+
+export type CollectionAccess<TData = any> = {
+  admin?: ({ slug, req }: { req: PayloadRequest; slug: string }) => boolean | Promise<boolean>
+  create?: Access<TData>
+  delete?: Access<TData>
+  read?: Access<TData>
+  readVersions?: Access<TData>
+  unlock?: Access<TData>
+  update?: Access<TData>
+  /**
+   * Controls on-demand validation for this collection.
+   * Falls back to `update` access when omitted.
+   * The access function receives `req.operation === 'validate'`.
+   * @see https://payloadcms.com/docs/validation/overview#access-control-and-hooks
+   */
+  validate?: Access<TData>
+}
+
+type CollectionHooks<TSlug extends CollectionSlug = any> = {
+  afterChange?: AfterChangeHook[]
+  afterDelete?: AfterDeleteHook[]
+  afterError?: AfterErrorHook[]
+  afterForgotPassword?: AfterForgotPasswordHook[]
+  afterLogin?: AfterLoginHook[]
+  afterLogout?: AfterLogoutHook[]
+  afterMe?: AfterMeHook[]
+  afterOperation?: AfterOperationHook<TSlug>[]
+  afterRead?: AfterReadHook[]
+  afterRefresh?: AfterRefreshHook[]
+  beforeChange?: BeforeChangeHook[]
+  beforeDelete?: BeforeDeleteHook[]
+  beforeLogin?: BeforeLoginHook[]
+  beforeOperation?: BeforeOperationHook<TSlug>[]
+  beforeRead?: BeforeReadHook[]
+  beforeValidate?: BeforeValidateHook[]
+  /**
+    /**
+     * Use the `me` hook to control the `me` operation.
+     * Here, you can optionally instruct the me operation to return early,
+     * and skip its default logic.
+     */
+  me?: MeHook[]
+  /**
+   * Use the `refresh` hook to control the refresh operation.
+   * Here, you can optionally instruct the refresh operation to return early,
+   * and skip its default logic.
+   */
+  refresh?: RefreshHook[]
+}
+
+/** Manage all aspects of a data collection */
+export type CollectionConfig<TSlug extends CollectionSlug = any> = {
+  /**
+   * Do not set this property manually. This is set to true during sanitization, to avoid
+   * sanitizing the same collection multiple times.
+   */
+  _sanitized?: boolean
+  /**
+   * Access control
+   */
+  access?: CollectionAccess
+  /**
+   * Collection admin options
+   */
+  admin?: CollectionAdminOptions
+  /**
+   * Collection login options
+   *
+   * Use `true` to enable with default options
+   */
+  auth?: boolean | IncomingAuthType
+  /**
+   * Automatically track the user that created and last updated each document via
+   * polymorphic `createdBy` / `updatedBy` relationship fields to your auth collections.
+   *
+   * Use `true` (default) to enable both, `false` to disable both, or an object to
+   * toggle each field independently, e.g. `{ updatedBy: false }`.
+   *
+   * @default true
+   */
+  authorship?: Authorship | boolean
+  /**
+   * Configuration for bulk operations
+   */
+  /** Extension point to add your custom data. Server only. */
+  custom?: CollectionCustom
+  /**
+   * Used to override the default naming of the database table or collection with your using a function or string
+   * @WARNING: If you change this property with existing data, you will need to handle the renaming of the table in your database or by using migrations
+   */
+  dbName?: DBIdentifierName
+  defaultPopulate?: IsAny<SelectFromCollectionSlug<TSlug>> extends true
+    ? SelectType
+    : SelectFromCollectionSlug<TSlug>
+  /**
+   * Default field to sort by in collection list view
+   */
+  defaultSort?: Sort
+  /**
+   * Disable the bulk delete operation for the collection in the admin panel and the API
+   */
+  disableBulkDelete?: boolean
+  /**
+   * Disable the bulk edit operation for the collection in the admin panel and the API
+   */
+  disableBulkEdit?: boolean
+  /**
+   * When true, do not show the "Duplicate" button while editing documents within this collection and prevent `duplicate` from all APIs
+   */
+  disableDuplicate?: boolean
+  /**
+   * Opt-in to enable query presets for this collection.
+   * @see https://payloadcms.com/docs/query-presets/overview
+   */
+  enableQueryPresets?: boolean
+  /**
+   * Custom rest api endpoints, set false to disable all rest endpoints for this collection.
+   */
+  endpoints?: false | Omit<Endpoint, 'root'>[]
+  fields: Field[]
+  /**
+   * Enable folder hierarchy preset for this collection.
+   * Sets hierarchy with folder defaults: allowHasMany: false, FolderIcon, useHeaderButton: true
+   *
+   * Use `true` for defaults, or object for customization.
+   * Cannot be used together with `tags` or `hierarchy`.
+   */
+  folders?: boolean | FoldersConfig
+  /**
+   * GraphQL configuration
+   */
+  graphQL?:
+    | {
+        disableMutations?: true
+        disableQueries?: true
+        pluralName?: string
+        singularName?: string
+      }
+    | false
+  /**
+   * Enable hierarchical tree structure for this collection
+   *
+   * Use `true` to enable with defaults (auto-detects parent field)
+   * or provide configuration object
+   *
+   * @example
+   * // Enable with defaults
+   * hierarchy: true
+   *
+   * @example
+   * // Customize field names and slugify function
+   * hierarchy: {
+   *   parentFieldName: 'parent',
+   *   slugify: (text) => customSlugify(text),
+   *   slugPathFieldName: '_breadcrumbPath'
+   * }
+   */
+  hierarchy?: boolean | HierarchyConfig
+  /**
+   * Hooks to modify Payload functionality
+   */
+  hooks?: CollectionHooks<TSlug>
+  /**
+   * Define compound indexes for this collection.
+   * This can be used to either speed up querying/sorting by 2 or more fields at the same time or
+   * to ensure uniqueness between several fields.
+   * Specify field paths
+   * @example
+   * [{ unique: true, fields: ['title', 'group.name'] }]
+   * @default []
+   */
+  indexes?: CompoundIndex[]
+  /**
+   * Label configuration
+   */
+  labels?: {
+    plural?: LabelFunction | StaticLabel
+    singular?: LabelFunction | StaticLabel
+  }
+  /** Read-only Markdown instructions included in this collection's MCP and CLI schema responses. */
+  llmInstructions?: string
+  /**
+   * Enables / Disables the ability to lock documents while editing
+   * @default true
+   */
+  lockDocuments?:
+    | {
+        duration: number
+      }
+    | false
+  /**
+   * If true, enables custom ordering for the collection, and documents in the listView can be reordered via drag and drop.
+   * New documents are inserted at the end of the list according to this parameter.
+   *
+   * Under the hood, a field with {@link https://payloadcms.com/docs/configuration/collections#fractional-indexing|fractional indexing} is used to optimize inserts and reorderings.
+   *
+   * @default false
+   *
+   * @experimental There may be frequent breaking changes to this API
+   */
+  orderable?: boolean
+  slug: string
+  /**
+   * Enable tags hierarchy preset for this collection.
+   * Sets hierarchy with tag defaults: allowHasMany: true, TagIcon
+   *
+   * Use `true` for defaults, or object for customization.
+   * Cannot be used together with `folders` or `hierarchy`.
+   */
+  tags?: boolean | TagsConfig
+  /**
+   * Add `createdAt`, `deletedAt` and `updatedAt` fields
+   *
+   * @default true
+   */
+  timestamps?: boolean
+  /**
+   * Enables trash support for this collection.
+   *
+   * When enabled, documents will include a `deletedAt` timestamp field.
+   * This allows documents to be marked as deleted without being permanently removed.
+   * The `deletedAt` field will be set to the current date and time when a document is trashed.
+   *
+   * @default false
+   */
+  trash?: boolean
+  /**
+   * Options used in typescript generation
+   */
+  typescript?: {
+    /**
+     * Typescript generation name given to the interface type
+     */
+    interface?: string
+  }
+  /**
+   * Customize the handling of incoming file uploads
+   *
+   * @default false // disable uploads
+   */
+  upload?: boolean | UploadConfig
+  /**
+   * Enable versioning. Set it to true to enable default versions settings,
+   * or customize versions options by setting the property equal to an object
+   * containing the version options.
+   *
+   * @default false // disable versioning
+   */
+  versions?: boolean | IncomingCollectionVersions
+} & Pick<
+  WithSelectFn<
+    IsAny<SelectFromCollectionSlug<TSlug>> extends true
+      ? SelectIncludeType
+      : SelectFromCollectionSlug<TSlug>
+  >,
+  'select'
+>
+
+export type SanitizedJoin = {
+  /**
+   * The field configuration defining the join
+   */
+  field: JoinField
+  getForeignPath?(args: { locale?: TypedLocale }): string
+  /**
+   * The path of the join field in dot notation
+   */
+  joinPath: string
+  /**
+   * `parentIsLocalized` is true if any parent field of the
+   * field configuration defining the join is localized
+   */
+  parentIsLocalized: boolean
+  targetField: RelationshipField | UploadField
+}
+
+export type SanitizedJoins = {
+  [collectionSlug: string]: SanitizedJoin[]
+}
+
+/**
+ * Properties populated during sanitization are redefined below. All other collection properties
+ * preserve their incoming optionality.
+ */
+export interface SanitizedCollectionConfig
+  extends
+    Omit<
+      CollectionConfig,
+      | '_sanitized'
+      | 'access'
+      | 'admin'
+      | 'auth'
+      | 'authorship'
+      | 'custom'
+      | 'endpoints'
+      | 'folder'
+      | 'folders'
+      | 'hierarchy'
+      | 'hooks'
+      | 'indexes'
+      | 'labels'
+      | 'slug'
+      | 'tags'
+      | 'timestamps'
+      | 'upload'
+      | 'versions'
+    >,
+    Required<Pick<CollectionConfig, 'admin' | 'custom' | 'indexes' | 'timestamps'>> {
+  _sanitized: true
+  access: Pick<CollectionAccess, 'admin'> &
+    Required<
+      Pick<
+        CollectionAccess,
+        'create' | 'delete' | 'read' | 'readVersions' | 'unlock' | 'update' | 'validate'
+      >
+    >
+  auth: Auth
+  authorship: SanitizedAuthorship
+  endpoints: Endpoint[] | false
+  /**
+   * Fields in the database schema structure
+   * Rows / collapsible / tabs w/o name `fields` merged to top, UIs are excluded
+   */
+  flattenedFields: FlattenedField[]
+  /**
+   * Hierarchy configuration (when collection is a hierarchy type like folders or tags)
+   */
+  hierarchy: false | SanitizedHierarchyConfig
+  hooks: Required<CollectionHooks>
+  /**
+   * Object of collections to join 'Join Fields object keyed by collection
+   */
+  joins: SanitizedJoins
+  labels: Required<NonNullable<CollectionConfig['labels']>>
+  /**
+   * List of all polymorphic join fields
+   */
+  polymorphicJoins: SanitizedJoin[]
+
+  sanitizedIndexes: SanitizedCompoundIndex[]
+
+  slug: CollectionSlug
+
+  upload: SanitizedUploadConfig
+  versions?: SanitizedCollectionVersions
+}
+
+export type Collection = {
+  config: SanitizedCollectionConfig
+  customIDType?: 'number' | 'text'
+  graphQL?: {
+    countType: GraphQLObjectType
+    JWT: GraphQLObjectType
+    mutationInputType: GraphQLNonNull<any>
+    paginatedType: GraphQLObjectType
+    type: GraphQLObjectType
+    updateMutationInputType: GraphQLNonNull<any>
+    versionType: GraphQLObjectType
+    whereInputType: GraphQLInputObjectType
+  }
+}
+
+export type BulkOperationResult<TSlug extends CollectionSlug, TSelect extends SelectType> = {
+  docs: TransformCollectionWithSelect<TSlug, TSelect>[]
+  errors: {
+    id: DataFromCollectionSlug<TSlug>['id']
+    isPublic: boolean
+    message: string
+  }[]
+}
+
+export type AuthCollection = {
+  config: SanitizedCollectionConfig
+}
+
+export type LocalizedMeta = {
+  [locale: string]: {
+    status: 'draft' | 'published'
+    updatedAt: string
+  }
+}
+
+export type TypeWithID = {
+  id: number | string
+}
+
+export type TypeWithTimestamps = {
+  [key: string]: unknown
+  createdAt: string
+  deletedAt?: null | string
+  id: number | string
+  updatedAt: string
+}
+
+export type CompoundIndex = {
+  fields: string[]
+  unique?: boolean
+}
+
+export type SanitizedCompoundIndex = {
+  fields: {
+    field: FlattenedField
+    localizedPath: string
+    path: string
+    pathHasLocalized: boolean
+  }[]
+  unique: boolean
+}

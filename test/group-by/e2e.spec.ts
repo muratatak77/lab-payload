@@ -1,0 +1,1233 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import * as path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../__helpers/shared/sdk/index.js'
+import type { Config, Post } from './payload-types.js'
+
+import { sortColumn, toggleColumn } from '../__helpers/e2e/columns/index.js'
+import { addListFilter } from '../__helpers/e2e/filters/index.js'
+import {
+  addGroupBy,
+  clearGroupBy,
+  closeGroupBy,
+  openGroupBy,
+} from '../__helpers/e2e/groupBy/index.js'
+import { exactText, saveDocAndAssert, selectTableRow } from '../__helpers/e2e/helpers.js'
+import { navigateToListView } from '../__helpers/e2e/navigateToListView.js'
+import { deletePreferences } from '../__helpers/e2e/preferences.js'
+import { getSelectMenu } from '../__helpers/e2e/selectInput.js'
+import { openNav } from '../__helpers/e2e/toggleNav.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { devUser } from '../credentials.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import {
+  openCreatePreset,
+  openEditPreset,
+  openManagePresets,
+  selectPreset,
+} from '../query-presets/helpers/togglePreset.js'
+import { noGroupableSlug } from './collections/NoGroupable/index.js'
+import { postsSlug } from './collections/Posts/index.js'
+
+const { beforeEach } = test
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+test.describe('Group By', () => {
+  let page: Page
+  let url: AdminUrlUtil
+  let noGroupableUrl: AdminUrlUtil
+  let serverURL: string
+  let payload: PayloadTestSDK<Config>
+  let user: any
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({ dirname }))
+    url = new AdminUrlUtil(serverURL, 'posts')
+    noGroupableUrl = new AdminUrlUtil(serverURL, noGroupableSlug)
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+
+    user = await payload.login({
+      collection: 'users',
+      data: {
+        email: devUser.email,
+        password: devUser.password,
+      },
+      overrideAccess: true,
+    })
+  })
+
+  beforeEach(async () => {
+    // await throttleTest({
+    //   page,
+    //   context,
+    //   delay: 'Fast 4G',
+    // })
+
+    await reInitializeDB({
+      serverURL,
+    })
+
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  test('should show the group by control for collections with groupable fields', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('#toggle-group-by')).toBeVisible()
+  })
+
+  test('should hide the group by control for collections with no groupable fields', async () => {
+    await page.goto(noGroupableUrl.list)
+    await expect(page.locator('#toggle-group-by')).toBeHidden()
+  })
+
+  test('should open and close group-by popup', async () => {
+    await page.goto(url.list)
+    const groupByContent = page.locator('.group-by-control__popup .group-by-control__content')
+    await openGroupBy(page)
+    await expect(groupByContent).toBeVisible()
+    await closeGroupBy(page)
+    await expect(groupByContent).toBeHidden()
+  })
+
+  test('should display field options in group-by popup', async () => {
+    await page.goto(url.list)
+    const { groupByContent } = await openGroupBy(page)
+
+    // TODO: expect no initial selection and for the sort control to be disabled
+
+    const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+    await fieldTrigger.click()
+
+    await expect(
+      page.locator('.popup-button-list__button', {
+        hasText: exactText('Title'),
+      }),
+    ).toBeVisible()
+  })
+
+  test('should omit unsupported fields from appearing as options in the group-by popup', async () => {
+    await page.goto(url.list)
+
+    const { groupByContent } = await openGroupBy(page)
+
+    // certain fields are not allowed to be grouped by, for example rich text and the ID field itself
+    const forbiddenOptions = ['ID', 'Content']
+
+    const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+    await fieldTrigger.click()
+
+    for (const fieldOption of forbiddenOptions) {
+      const optionEl = page.locator('.popup-button-list__button', {
+        hasText: exactText(fieldOption),
+      })
+      await expect(optionEl).toHaveCount(0)
+    }
+  })
+
+  test('should properly group by field', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+
+    await expect(page.locator('.table-section__header')).toHaveCount(2)
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 1') }),
+    ).toBeVisible()
+
+    await expect(page.locator('.table-wrap').first().locator('tbody tr')).toHaveCount(10)
+
+    const table1CategoryCells = page
+      .locator('.table-wrap')
+      .first()
+      .locator('tbody tr td.cell-category')
+
+    // TODO: is there a way to iterate over all cells and check they all match? I could not get this to work.
+    await expect(table1CategoryCells.first()).toHaveText(/Category 1/)
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 2') }),
+    ).toBeVisible()
+
+    const table2 = page.locator('.table-wrap').nth(1)
+    await expect(table2).toBeVisible()
+    await table2.scrollIntoViewIfNeeded()
+
+    await expect(page.locator('.table-wrap').nth(1).locator('tbody tr')).toHaveCount(10)
+
+    const table2CategoryCells = page
+      .locator('.table-wrap')
+      .nth(1)
+      .locator('tbody tr td.cell-category')
+
+    // TODO: is there a way to iterate over all cells and check they all match? I could not get this to work.
+    await expect(table2CategoryCells.first()).toHaveText(/Category 2/)
+  })
+
+  test('should render grouped document cards and preserve group pagination in grid layout', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await page.getByRole('radio', { name: 'Grid' }).click()
+
+    const category1 = page.locator('.table-wrap--group-by', {
+      has: page.getByRole('heading', { name: 'Category 1' }),
+    })
+    const category2 = page.locator('.table-wrap--group-by', {
+      has: page.getByRole('heading', { name: 'Category 2' }),
+    })
+
+    await expect(category1.locator('.document-card')).toHaveCount(10)
+    await expect(category1.getByRole('link', { name: /^Post \d+$/ }).first()).toBeVisible()
+    await expect(category2.locator('.document-card')).toHaveCount(10)
+    await expect(category2.getByRole('link', { name: /^Post \d+$/ }).first()).toBeVisible()
+    await expect(category1.locator('.simple-pagination')).toBeVisible()
+
+    await category1.locator('.simple-pagination .clickable-arrow--right').click()
+
+    await expect(page).toHaveURL(/queryByGroup=/)
+    await expect(category1.locator('.document-card')).toHaveCount(6)
+    await expect(category2.locator('.document-card')).toHaveCount(10)
+
+    await page.getByRole('radio', { name: 'Table' }).click()
+    await expect(category1.locator('tbody tr')).toHaveCount(6)
+  })
+
+  test('should apply group header spacing only in grid layout', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await page.getByRole('radio', { name: 'Grid' }).click()
+
+    const groups = page.locator('.table-wrap--group-by')
+    const firstHeader = groups.first().locator('.table-section__header-inner')
+    const secondHeader = groups.nth(1).locator('.table-section__header-inner')
+
+    await expect(groups).toHaveCount(2)
+    await expect(firstHeader).toHaveCSS('min-height', '48px')
+    await expect(firstHeader).toHaveCSS('border-bottom-width', '1px')
+    await expect(firstHeader).toHaveCSS('border-bottom-color', 'rgba(0, 0, 0, 0)')
+    await expect(secondHeader).toHaveCSS('border-bottom-width', '1px')
+    await expect(secondHeader).toHaveCSS('border-bottom-color', 'rgba(0, 0, 0, 0)')
+    await expect(firstHeader).toHaveCSS('padding-top', '0px')
+    await expect(secondHeader).toHaveCSS('padding-top', '0px')
+    await expect(groups.first().locator('.card-grid')).toHaveCSS('padding-top', '0px')
+    await expect(groups.first().locator('.card-grid')).toHaveCSS('padding-bottom', '0px')
+    await expect(groups.nth(1).locator('.table-section__divider')).toBeHidden()
+
+    const hasPrimaryHeadingColor = await groups
+      .first()
+      .locator('.table-section__heading')
+      .evaluate((heading) => {
+        const expected = document.createElement('span')
+        expected.style.color = 'var(--color-text-primary, var(--color-text))'
+        heading.append(expected)
+        const matches = getComputedStyle(heading).color === getComputedStyle(expected).color
+        expected.remove()
+
+        return matches
+      })
+
+    expect(hasPrimaryHeadingColor).toBe(true)
+
+    await page.getByRole('radio', { name: 'Table' }).click()
+
+    await expect(groups.first().locator('.table-section__header-inner')).toHaveCSS(
+      'min-height',
+      '48px',
+    )
+    await expect(groups.first().locator('.table-section__header-inner')).toHaveCSS(
+      'border-bottom-width',
+      '1px',
+    )
+    await expect(groups.nth(1).locator('.table-section__divider')).toBeVisible()
+  })
+
+  test('should load group-by from user preferences', async () => {
+    await deletePreferences({
+      key: `${postsSlug}.list`,
+      payload,
+      user,
+    })
+
+    await page.goto(url.list)
+    await expect(page).not.toHaveURL(/groupBy=/)
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await expect(page).toHaveURL(/groupBy=category/)
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+
+    await page.goto(url.admin)
+
+    // click on the "Posts" link in the sidebar to invoke a soft navigation
+    await openNav(page)
+    await page.locator(`.nav a[href="/admin/collections/${postsSlug}"]`).click()
+
+    await expect(page).toHaveURL(/groupBy=category/)
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+  })
+
+  test('should reset group-by using the global "clear" button', async () => {
+    await page.goto(url.list)
+    const { groupByContent } = await openGroupBy(page)
+
+    const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+    await expect(fieldTrigger.locator('.group-by-control__select-value')).toHaveText(
+      'Select a value',
+    )
+    // Clear button should not exist when no field is selected
+    await expect(
+      groupByContent.locator('.group-by-control__header-actions button[aria-label="Clear"]'),
+    ).toHaveCount(0)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+    await expect(page.locator('.table-section__header')).toHaveCount(2)
+
+    await clearGroupBy(page)
+  })
+
+  test('should reset group-by via clear button in popup header', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+    await expect(page.locator('.table-section__header')).toHaveCount(2)
+
+    // Re-open the popup (it may have closed after data refresh)
+    const { groupByContent } = await openGroupBy(page)
+
+    // Click the trash/clear button in the popup header
+    const clearButton = groupByContent.locator(
+      '.group-by-control__header-actions button[aria-label="Clear"]',
+    )
+    await clearButton.click()
+
+    // The popup closes automatically after clearing, verify URL and table state first
+    await expect(page).not.toHaveURL(/&groupBy=/)
+    await expect(page.locator('.table-wrap')).toHaveCount(1)
+    await expect(page.locator('.table-section__header')).toHaveCount(0)
+
+    // Re-open the popup to verify the field is cleared and sort is disabled
+    const { groupByContent: reopenedContent } = await openGroupBy(page)
+
+    const fieldTrigger = reopenedContent.locator('.group-by-control__select-trigger').first()
+    await expect(fieldTrigger.locator('.group-by-control__select-value')).toHaveText(
+      'Select a value',
+    )
+
+    // Sort trigger should be disabled when no field is selected
+    const sortTrigger = reopenedContent.locator('.group-by-control__select-trigger').nth(1)
+    await expect(sortTrigger).toBeDisabled()
+  })
+
+  test('should preserve unrelated URL parameters when changing group-by', async () => {
+    await page.goto(`${url.list}?custom=keep`)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await expect(page).toHaveURL(/groupBy=category/)
+    await expect.poll(() => new URL(page.url()).searchParams.get('custom')).toBe('keep')
+
+    await clearGroupBy(page)
+    await expect(page).not.toHaveURL(/groupBy=category/)
+    await expect.poll(() => new URL(page.url()).searchParams.get('custom')).toBe('keep')
+  })
+
+  test('should group by relationships even when their values are null', async () => {
+    await payload.create({
+      collection: postsSlug,
+      data: {
+        category: null,
+        title: 'My Post',
+      },
+      overrideAccess: true,
+    })
+
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(3)
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should group by date fields even when their values are null', async () => {
+    await payload.create({
+      collection: postsSlug,
+      data: {
+        date: null,
+        title: 'My Post',
+      },
+      overrideAccess: true,
+    })
+
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Date', fieldPath: 'date' })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(1)
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should group by boolean values', async () => {
+    await Promise.all([
+      await payload.create({
+        collection: postsSlug,
+        data: {
+          checkbox: null,
+          title: 'Null Post',
+        },
+        overrideAccess: true,
+      }),
+      await payload.create({
+        collection: postsSlug,
+        data: {
+          checkbox: true,
+          title: 'True Post',
+        },
+        overrideAccess: true,
+      }),
+      await payload.create({
+        collection: postsSlug,
+        data: {
+          checkbox: false,
+          title: 'False Post',
+        },
+        overrideAccess: true,
+      }),
+    ])
+
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Checkbox',
+      fieldPath: 'checkbox',
+    })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(3)
+
+    await expect(page.locator('.table-section__header')).toHaveCount(3)
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('True') }),
+    ).toBeVisible()
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('False') }),
+    ).toBeVisible()
+  })
+
+  test('should render the label of a nested field as text in the group-by button', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Meta > Meta Title', fieldPath: 'meta.metaTitle' })
+
+    await expect(page.locator('#toggle-group-by')).toHaveText('Group by Meta > Meta Title')
+  })
+
+  test('should fall back to the field name in the group-by button when a nested field has no label', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Meta > Meta Description',
+      fieldPath: 'meta.metaDescription',
+    })
+
+    await expect(page.locator('#toggle-group-by')).toHaveText('Group by Meta > Meta Description')
+  })
+
+  test('should sort the group-by field globally', async () => {
+    await page.goto(url.list)
+
+    const { groupByContent } = await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    const firstHeading = page.locator('.table-section__heading').first()
+    await expect(firstHeading).toHaveText(/Category 1/)
+    const secondHeading = page.locator('.table-section__heading').nth(1)
+    await expect(secondHeading).toHaveText(/Category 2/)
+
+    // Click the sort trigger (second select trigger)
+    const sortTrigger = groupByContent.locator('.group-by-control__select-trigger').nth(1)
+    await sortTrigger.click()
+    await page.locator('.popup-button-list__button', { hasText: exactText('Descending') }).click()
+
+    await expect(page.locator('.table-section__heading').first()).toHaveText(/Category 2/)
+    await expect(page.locator('.table-section__heading').nth(1)).toHaveText(/Category 1/)
+  })
+
+  test('should sort by columns within each table (will affect all tables)', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    const table1 = page.locator('.table-wrap').first()
+
+    await sortColumn(page, {
+      fieldPath: 'title',
+      scope: table1,
+      targetState: 'asc',
+    })
+
+    const table1AscOrder = ['Find me', 'Post 1', 'Post 10', 'Post 11']
+    const table2AscOrder = ['Find me', 'Post 16', 'Post 17', 'Post 18']
+
+    const table1Titles = table1.locator('tbody tr td.cell-title')
+    const table2Titles = page.locator('.table-wrap').nth(1).locator('tbody tr td.cell-title')
+
+    await expect(table1Titles).toHaveCount(10)
+    await expect(table2Titles).toHaveCount(10)
+
+    // Note: it would be nice to put this in a loop, but this was flaky
+    await expect(table1Titles.nth(0)).toHaveText(table1AscOrder[0] || '')
+    await expect(table1Titles.nth(1)).toHaveText(table1AscOrder[1] || '')
+    await expect(table2Titles.nth(0)).toHaveText(table2AscOrder[0] || '')
+    await expect(table2Titles.nth(1)).toHaveText(table2AscOrder[1] || '')
+
+    await sortColumn(page, {
+      fieldPath: 'title',
+      scope: table1,
+      targetState: 'desc',
+    })
+
+    const table1DescOrder = ['Post 9', 'Post 8', 'Post 7', 'Post 6']
+    const table2DescOrder = ['Post 30', 'Post 29', 'Post 28', 'Post 27']
+
+    // Note: it would be nice to put this in a loop, but this was flaky
+    await expect(table1Titles.nth(0)).toHaveText(table1DescOrder[0] || '')
+    await expect(table1Titles.nth(1)).toHaveText(table1DescOrder[1] || '')
+    await expect(table2Titles.nth(0)).toHaveText(table2DescOrder[0] || '')
+    await expect(table2Titles.nth(1)).toHaveText(table2DescOrder[1] || '')
+  })
+
+  test('should apply columns to all tables', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    const table1ColumnHeadings = page.locator('.table-wrap').nth(0).locator('thead tr th')
+    await expect(table1ColumnHeadings.nth(1)).toHaveText('Title')
+    await expect(table1ColumnHeadings.nth(2)).toHaveText('Category')
+
+    const table2ColumnHeadings = page.locator('.table-wrap').nth(1).locator('thead tr th')
+    await expect(table2ColumnHeadings.nth(1)).toHaveText('Title')
+    await expect(table2ColumnHeadings.nth(2)).toHaveText('Category')
+
+    await toggleColumn(page, { columnLabel: 'Title', targetState: 'off' })
+
+    await expect(table1ColumnHeadings.locator('text=Title')).toHaveCount(0)
+    await expect(table1ColumnHeadings.nth(1)).toHaveText('Category')
+
+    await expect(table2ColumnHeadings.locator('text=Title')).toHaveCount(0)
+    await expect(table2ColumnHeadings.nth(1)).toHaveText('Category')
+  })
+
+  test('should apply filters to all tables', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    await addListFilter({
+      fieldLabel: 'Title',
+      operatorLabel: 'equals',
+      page,
+      value: 'Find me',
+    })
+
+    const table1 = page.locator('.table-wrap').first()
+    await expect(table1).toBeVisible()
+    const table1Rows = table1.locator('tbody tr')
+    await expect(table1Rows).toHaveCount(1)
+    await expect(table1Rows.first().locator('td.cell-title')).toHaveText('Find me')
+
+    const table2 = page.locator('.table-wrap').nth(1)
+    await expect(table2).toBeVisible()
+    const table2Rows = table2.locator('tbody tr')
+    await expect(table2Rows).toHaveCount(1)
+    await expect(table2Rows.first().locator('td.cell-title')).toHaveText('Find me')
+  })
+
+  test('should apply filters to the distinct results of the group-by field', async () => {
+    // This ensures that no tables are rendered without docs
+
+    await page.goto(url.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Category',
+      fieldPath: 'category',
+    })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Category',
+      operatorLabel: 'equals',
+      page,
+      value: 'Category 1',
+    })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(1)
+
+    // Reset the filter by reloading the page without URL params
+    // TODO: There are no current test helpers for this
+    await page.goto(url.list)
+
+    await addListFilter({
+      fieldLabel: 'Title',
+      operatorLabel: 'equals',
+      page,
+      value: 'This title does not exist',
+    })
+
+    await expect(page.locator('.table-wrap')).toHaveCount(0)
+
+    await page.locator('.no-results').isVisible()
+  })
+
+  test('should paginate globally (all tables)', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Title', fieldPath: 'title' })
+
+    // Global pagination controls should be visible when group-by produces many groups
+    await expect(page.locator('.collection-list > .page-controls')).toBeVisible()
+  })
+
+  test('should paginate globally when grouping by virtual relationship field', async () => {
+    await page.goto(url.list)
+
+    // Open the group-by popup
+    const { groupByContent } = await openGroupBy(page)
+
+    // Select the virtual field
+    const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+    await fieldTrigger.click()
+    await page
+      .locator('.popup-button-list__button', {
+        hasText: exactText('Virtual Title From Page'),
+      })
+      .click()
+
+    // Wait for the field to be selected
+    await expect(fieldTrigger.locator('.group-by-control__select-value')).toHaveText(
+      'Virtual Title From Page',
+    )
+
+    // Virtual fields get transformed to their resolved path in the URL (page.title)
+    await expect(page).toHaveURL(/&groupBy=page\.title/)
+
+    // Should show global pagination controls when there are 30 distinct page titles
+    await expect(page.locator('.collection-list > .page-controls')).toBeVisible()
+
+    // Verify we have multiple pages (30 pages with default limit of 10 = 3 pages)
+    const pageInfo = page.locator('.collection-list > .page-controls .page-controls__page-info')
+    await expect(pageInfo).toBeVisible()
+    await expect(pageInfo).toContainText('of 30')
+  })
+
+  test('should paginate per table', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    const table1 = page.locator('.table-wrap').first()
+    const table2 = page.locator('.table-wrap').nth(1)
+
+    // Per-table pagination uses SimplePagination component
+    await expect(table1.locator('.simple-pagination')).toBeVisible()
+    await expect(table2.locator('.simple-pagination')).toBeVisible()
+
+    // Click the next page arrow within table1's SimplePagination
+    await table1.locator('.simple-pagination .clickable-arrow--right').click()
+
+    // Verify queryByGroup param is added to URL (per-table pagination uses this instead of ?page=)
+    await expect(page).toHaveURL(/queryByGroup=/)
+  })
+
+  test('should reset ?queryByGroup= param when other params change', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    const table1 = page.locator('.table-wrap').first()
+    const table2 = page.locator('.table-wrap').nth(1)
+
+    // Per-table pagination uses SimplePagination component
+    await expect(table1.locator('.simple-pagination')).toBeVisible()
+    await expect(table2.locator('.simple-pagination')).toBeVisible()
+
+    // Click the next page arrow to trigger queryByGroup param
+    await table1.locator('.simple-pagination .clickable-arrow--right').click()
+
+    await expect(page).toHaveURL(/queryByGroup=/)
+
+    await clearGroupBy(page)
+
+    await expect(page).not.toHaveURL(/queryByGroup=/)
+  })
+
+  test('should not render per table pagination controls when group-by is not active', async () => {
+    // delete user prefs to ensure that group-by isn't populated after loading the page
+    await deletePreferences({ key: `${postsSlug}.list`, payload, user })
+    await page.goto(url.list)
+    await expect(page.locator('.page-controls')).toHaveCount(1)
+  })
+
+  test('should render date fields in proper format when displayed as table headers', async () => {
+    await page.goto(url.list)
+    await addGroupBy(page, { fieldLabel: 'Updated At', fieldPath: 'updatedAt' })
+
+    // the value of the updated at column in the table should match exactly the value in the table cell
+    const table1 = page.locator('.table-wrap').first()
+    const firstTableHeading = table1.locator('.table-section__heading')
+    const firstRowUpdatedAtCell = table1.locator('tbody tr td.cell-updatedAt').first()
+
+    const headingText = (await firstTableHeading.textContent())?.trim()
+    const cellText = (await firstRowUpdatedAtCell.textContent())?.trim()
+
+    expect(headingText).toBeTruthy()
+    expect(cellText).toBeTruthy()
+    expect(headingText).toEqual(cellText)
+  })
+
+  test.skip('should group by nested fields', async () => {
+    await page.goto(url.list)
+    expect(true).toBe(true)
+  })
+
+  test('can select all rows within a single table as expected', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    const firstTable = page.locator('.table-wrap').first()
+    const firstTableRows = firstTable.locator('tbody tr')
+
+    await expect(firstTableRows).toHaveCount(10)
+
+    await firstTable.locator('input#select-all').check()
+
+    await expect(page.locator('.list-header .list-selection')).toBeHidden()
+
+    await expect(firstTable.locator('button#select-all-across-pages')).toBeVisible()
+
+    await firstTable.locator('button#select-all-across-pages').click()
+
+    await expect(firstTable.locator('button#select-all-across-pages')).toBeHidden()
+  })
+
+  test('can bulk edit within a single table without affecting the others', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    const firstTable = page.locator('.table-wrap').first()
+    const secondTable = page.locator('.table-wrap').nth(1)
+
+    const firstTableRows = firstTable.locator('tbody tr')
+    const secondTableRows = secondTable.locator('tbody tr')
+
+    await sortColumn(page, {
+      fieldPath: 'title',
+      scope: firstTable,
+      targetState: 'asc',
+    })
+
+    // select 'Find me' from both tables, only the first should get edited in the end
+    await selectTableRow(firstTable, 'Find me')
+    await selectTableRow(secondTable, 'Find me')
+
+    await firstTable.locator('.list-selection .edit-many__toggle').click()
+    const modal = page.locator('[id$="-edit-posts"]').first()
+
+    await expect(modal).toBeVisible()
+
+    await modal.locator('.field-select .rs__control').click()
+    await getSelectMenu({ page })
+      .locator('.rs__option', { hasText: exactText('Title') })
+      .click()
+
+    const field = modal.locator(`#field-title`)
+    await expect(field).toBeVisible()
+
+    await field.fill('Find me (updated)')
+    await modal.locator('.form-submit button[type="submit"].edit-many__save').click()
+
+    await expect(
+      firstTableRows.locator('td.cell-title', { hasText: exactText('Find me (updated)') }),
+    ).toHaveCount(0)
+
+    await expect(
+      secondTableRows.locator('td.cell-title', { hasText: exactText('Find me') }),
+    ).toHaveCount(1)
+  })
+
+  test('can bulk delete within a single table without affecting the others', async () => {
+    await page.goto(url.list)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+
+    const firstTable = page.locator('.table-wrap').first()
+    const secondTable = page.locator('.table-wrap').nth(1)
+
+    const firstTableRows = firstTable.locator('tbody tr')
+    const secondTableRows = secondTable.locator('tbody tr')
+
+    await sortColumn(page, {
+      fieldPath: 'title',
+      scope: firstTable,
+      targetState: 'asc',
+    })
+
+    // select 'Find me' from both tables, only the first should get deleted in the end
+    await selectTableRow(firstTable, 'Find me')
+    await selectTableRow(secondTable, 'Find me')
+
+    await firstTable.locator('.list-selection .delete-documents__toggle').click()
+    const modal = page.locator('[id$="-confirm-delete-many-docs"]').first()
+
+    await expect(modal).toBeVisible()
+    await modal.locator('[data-dialog-action="confirm"]').click()
+
+    await expect(
+      firstTableRows.locator('td.cell-title', { hasText: exactText('Find me') }),
+    ).toHaveCount(0)
+
+    await expect(
+      secondTableRows.locator('td.cell-title', { hasText: exactText('Find me') }),
+    ).toHaveCount(1)
+  })
+
+  test('can bulk edit across pages within a single table without affecting the others', async () => {
+    // TODO: This test is flaky, only in CI.
+    await page.goto(url.list)
+    await wait(500)
+    // Wait until it doesn't say loading anywhere on the page
+    await expect(page.locator('body')).not.toContainText('Loading')
+    await wait(500)
+
+    await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+    await wait(500)
+
+    const firstTable = page.locator('.table-wrap').first()
+    const secondTable = page.locator('.table-wrap').nth(1)
+
+    const firstTableRows = firstTable.locator('tbody tr')
+    const secondTableRows = secondTable.locator('tbody tr')
+
+    // click the select all checkbox, then the "select all across pages" button
+    await firstTable.locator('input#select-all').check()
+    await wait(500)
+
+    await firstTable.locator('button#select-all-across-pages').click()
+    await wait(500)
+
+    // now edit all titles and ensure that only the first table gets updated, not the second
+    await firstTable.locator('.list-selection .edit-many__toggle').click()
+    await wait(500)
+
+    const modal = page.locator('[id$="-edit-posts"]').first()
+
+    await expect(modal).toBeVisible()
+
+    await modal.locator('.field-select .rs__control').click()
+    await wait(500)
+
+    await getSelectMenu({ page })
+      .locator('.rs__option', { hasText: exactText('Title') })
+      .click()
+    await wait(500)
+
+    const field = modal.locator(`#field-title`)
+    await expect(field).toBeVisible()
+    await field.fill('Bulk edit across all pages')
+    await wait(500)
+
+    await modal.locator('.form-submit button[type="submit"].edit-many__save').click()
+
+    await expect(
+      firstTableRows.locator('td.cell-title', { hasText: exactText('Bulk edit across all pages') }),
+    ).toHaveCount(10)
+
+    await expect(
+      secondTableRows.locator('td.cell-title', {
+        hasText: exactText('Bulk edit across all pages'),
+      }),
+    ).toHaveCount(0)
+  })
+
+  test('should group by monomorphic has one relationship field', async () => {
+    const relationshipsUrl = new AdminUrlUtil(serverURL, 'relationships')
+    await page.goto(relationshipsUrl.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Mono Has One Relationship',
+      fieldPath: 'MonoHasOneRelationship',
+    })
+
+    // Should show populated values first, then "No value"
+    await expect(page.locator('.table-wrap')).toHaveCount(2)
+    await expect(page.locator('.table-section__header')).toHaveCount(2)
+
+    // Check that Category 1 appears as a group
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 1') }),
+    ).toBeVisible()
+
+    // Check that "No value" appears last
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should group by monomorphic has many relationship field', async () => {
+    const relationshipsUrl = new AdminUrlUtil(serverURL, 'relationships')
+    await page.goto(relationshipsUrl.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Mono Has Many Relationship',
+      fieldPath: 'MonoHasManyRelationship',
+    })
+
+    // Should flatten hasMany arrays - each category gets its own group
+    await expect(page.locator('.table-wrap')).toHaveCount(3)
+    await expect(page.locator('.table-section__header')).toHaveCount(3)
+
+    // Both categories should appear as separate groups
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 1') }),
+    ).toBeVisible()
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 2') }),
+    ).toBeVisible()
+
+    // "No value" should appear last
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should group by polymorphic has one relationship field', async () => {
+    const relationshipsUrl = new AdminUrlUtil(serverURL, 'relationships')
+    await page.goto(relationshipsUrl.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Poly Has One Relationship',
+      fieldPath: 'PolyHasOneRelationship',
+    })
+
+    // Should show groups for both collection types plus "No value"
+    await expect(page.locator('.table-wrap')).toHaveCount(3)
+    await expect(page.locator('.table-section__header')).toHaveCount(3)
+
+    // Check for Category 1 group
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 1') }),
+    ).toBeVisible()
+
+    // Check for Post group (should display the post's title as useAsTitle)
+    await expect(page.locator('.table-section__heading', { hasText: 'Find me' })).toBeVisible()
+
+    // "No value" should appear last
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should group by polymorphic has many relationship field', async () => {
+    const relationshipsUrl = new AdminUrlUtil(serverURL, 'relationships')
+    await page.goto(relationshipsUrl.list)
+
+    await addGroupBy(page, {
+      fieldLabel: 'Poly Has Many Relationship',
+      fieldPath: 'PolyHasManyRelationship',
+    })
+
+    // Should flatten polymorphic hasMany arrays - each relationship gets its own group
+    // Expecting: Category 1, Category 2, Post, and "No value" = 4 groups
+    await expect(page.locator('.table-wrap')).toHaveCount(4)
+    await expect(page.locator('.table-section__header')).toHaveCount(4)
+
+    // Check for both category groups
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 1') }),
+    ).toBeVisible()
+
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('Category 2') }),
+    ).toBeVisible()
+
+    // Check for post group
+    await expect(page.locator('.table-section__heading', { hasText: 'Find me' })).toBeVisible()
+
+    // "No value" should appear last (documents without any relationships)
+    await expect(
+      page.locator('.table-section__heading', { hasText: exactText('No value') }),
+    ).toBeVisible()
+  })
+
+  test('should hide field from groupBy options when admin.disableGroupBy is true', async () => {
+    await page.goto(url.list)
+    const { groupByContent } = await openGroupBy(page)
+
+    const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+    await fieldTrigger.click()
+
+    await expect(
+      page.locator('.popup-button-list__button', {
+        hasText: exactText('Disabled Virtual Relationship From Category'),
+      }),
+    ).toBeHidden()
+  })
+
+  test.describe('Trash', () => {
+    test('should show trashed docs in trash view when group-by is active', async () => {
+      await page.goto(url.list)
+
+      // Enable group-by on Category
+      await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+      await expect(page.locator('.table-wrap')).toHaveCount(2) // We expect 2 groups initially
+
+      // Trash the first document in the first group
+      const firstTable = page.locator('.table-wrap').first()
+      await firstTable.locator('.row-1 .cell-_select input').check()
+      await firstTable.locator('.list-selection__button[aria-label="Delete"]').click()
+
+      const firstGroupID = await firstTable.getAttribute('data-group-id')
+
+      const modalId = `dialog[id^="${firstGroupID}-confirm-delete-many-docs"]`
+      await expect(page.locator(modalId)).toBeVisible()
+
+      // Confirm trash (skip permanent delete)
+      await page.locator(`${modalId} [data-dialog-action="confirm"]`).click()
+      await expect(page.locator('.payload-toast-container .toast-success')).toHaveText(
+        '1 Post moved to trash.',
+      )
+
+      // Go to the trash view
+      await page.locator('#trash-view-pill').click()
+      await expect(page).toHaveURL(/\/posts\/trash(\?|$)/)
+
+      // Re-enable group-by on Category in trash view
+      await addGroupBy(page, { fieldLabel: 'Category', fieldPath: 'category' })
+      await expect(page.locator('.table-wrap')).toHaveCount(1) // Should only have Category 1 (or the trashed doc's category)
+
+      // Ensure the trashed doc is visible
+      await expect(
+        page.locator('.table-wrap tbody tr td.cell-title', { hasText: 'Find me' }),
+      ).toBeVisible()
+    })
+
+    test('should properly clear group-by in trash view', async () => {
+      await createTrashedPostDoc({ title: 'Trashed Post 1' })
+      await page.goto(url.trash)
+
+      // Enable group-by on Title
+      await addGroupBy(page, { fieldLabel: 'Title', fieldPath: 'title' })
+      await expect(page.locator('.table-wrap')).toHaveCount(1)
+      await expect(page.locator('.table-section__heading')).toHaveText('Trashed Post 1')
+
+      await clearGroupBy(page)
+      await expect(page.locator('.table-section__header')).toHaveCount(0)
+    })
+
+    test('should properly navigate to trashed doc edit view from group-by in trash view', async () => {
+      await createTrashedPostDoc({ title: 'Trashed Post 1' })
+      await page.goto(url.trash)
+
+      // Enable group-by on Title
+      await addGroupBy(page, { fieldLabel: 'Title', fieldPath: 'title' })
+      await expect(page.locator('.table-wrap')).toHaveCount(1)
+      await expect(page.locator('.table-section__heading')).toHaveText('Trashed Post 1')
+
+      await page.locator('.table-wrap tbody tr td.cell-title a').click()
+      await expect(page).toHaveURL(/\/posts\/trash\/\d+/)
+    })
+  })
+
+  async function createTrashedPostDoc(data: Partial<Post>): Promise<Post> {
+    return payload.create({
+      collection: postsSlug,
+      data: {
+        ...data,
+        deletedAt: new Date().toISOString(), // Set the post as trashed
+      },
+      overrideAccess: true,
+    })
+  }
+
+  test.describe('Query Presets with Virtual Fields', () => {
+    test('should display virtual field label in preset drawer when groupBy is saved', async () => {
+      await page.goto(url.list)
+
+      // Add group by virtual field
+      const { groupByContent } = await openGroupBy(page)
+      const fieldTrigger = groupByContent.locator('.group-by-control__select-trigger').first()
+      await fieldTrigger.click()
+      await page
+        .locator('.popup-button-list__button', {
+          hasText: exactText('Virtual Title From Page'),
+        })
+        .click()
+
+      await expect(fieldTrigger.locator('.group-by-control__select-value')).toHaveText(
+        'Virtual Title From Page',
+      )
+      await expect(page).toHaveURL(/&groupBy=page\.title/)
+
+      // Create a new preset with this groupBy
+      await openCreatePreset({ page })
+      const modal = page.locator('[id^=doc-drawer_payload-query-presets_0_]')
+      await expect(modal).toBeVisible()
+
+      const presetTitle = 'Virtual Field Preset'
+      await modal.locator('input[name="title"]').fill(presetTitle)
+
+      // The collapsed control shows the resolved virtual field label (not "page.title")
+      const groupByField = modal.locator('.query-preset-group-by-field')
+      await expect(groupByField).toBeVisible()
+      const groupByTrigger = groupByField.locator('#toggle-group-by')
+      await expect(groupByTrigger).toContainText('Virtual Title From Page')
+
+      // Open the control to verify the saved field label and sort direction
+      await groupByTrigger.click()
+      const groupByPopup = page.locator('.group-by-control__popup')
+      await expect(groupByPopup).toBeVisible()
+      await expect(groupByPopup).toContainText('Virtual Title From Page')
+      await expect(groupByPopup).toContainText('Ascending')
+
+      // Close the control before saving
+      await groupByTrigger.click()
+      await expect(groupByPopup).toBeHidden()
+
+      await saveDocAndAssert(page)
+      await expect(modal).toBeHidden()
+
+      await expect(page).toHaveURL(/groupBy=page\.title/)
+    })
+
+    test('should display virtual field label in preset list cell', async () => {
+      await payload.create({
+        collection: 'payload-query-presets',
+        data: {
+          access: {
+            delete: { constraint: 'onlyMe' },
+            read: { constraint: 'onlyMe' },
+            update: { constraint: 'onlyMe' },
+          },
+          groupBy: 'page.title',
+          isShared: false,
+          relatedCollection: postsSlug,
+          title: 'Virtual Field Cell Test',
+          where: {},
+        },
+        overrideAccess: true,
+        user,
+      })
+
+      await navigateToListView({ page, url: url.list })
+
+      // Open the preset drawer
+      await openManagePresets({ page })
+      const drawer = page.locator('dialog[id^="list-drawer_0_"]')
+      await expect(drawer).toBeVisible()
+
+      // Find the row with our preset in the drawer
+      const presetRow = drawer.locator('tbody tr', {
+        has: page.locator('button:has-text("Virtual Field Cell Test")'),
+      })
+      await expect(presetRow).toBeVisible()
+
+      // Check the groupBy cell displays the proper label (not "page.title")
+      const groupByCell = presetRow.locator('td.cell-groupBy')
+      await expect(groupByCell).toBeVisible()
+      await expect(groupByCell).toContainText('Virtual Title From Page')
+      await expect(groupByCell).toContainText('ascending')
+    })
+
+    test('should display virtual field label when editing a preset', async () => {
+      const presetTitle = 'Virtual Field Edit Test'
+      await payload.create({
+        collection: 'payload-query-presets',
+        data: {
+          access: {
+            delete: { constraint: 'onlyMe' },
+            read: { constraint: 'onlyMe' },
+            update: { constraint: 'onlyMe' },
+          },
+          groupBy: '-page.title',
+          isShared: false,
+          relatedCollection: postsSlug,
+          title: presetTitle,
+          where: {},
+        },
+        overrideAccess: true,
+        user,
+      })
+
+      // Navigate after preset is created so it shows in the popup
+      await navigateToListView({ page, url: url.list })
+
+      // Select the preset to make it active
+      await selectPreset({ page, presetTitle })
+
+      // Now open the edit preset drawer
+      await openEditPreset({ page })
+      const editModal = page.locator('[id^=doc-drawer_payload-query-presets_0_]')
+      await expect(editModal).toBeVisible()
+
+      // The collapsed control shows the resolved virtual field label (not "page.title")
+      const groupByField = editModal.locator('.query-preset-group-by-field')
+      await expect(groupByField).toBeVisible()
+      const groupByTrigger = groupByField.locator('#toggle-group-by')
+      await expect(groupByTrigger).toContainText('Virtual Title From Page')
+
+      // Open the control to verify the saved field label and descending sort direction
+      await groupByTrigger.click()
+      const groupByPopup = page.locator('.group-by-control__popup')
+      await expect(groupByPopup).toBeVisible()
+      await expect(groupByPopup).toContainText('Virtual Title From Page')
+      await expect(groupByPopup).toContainText('Descending')
+    })
+  })
+})

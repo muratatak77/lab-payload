@@ -1,0 +1,322 @@
+import type { BrowserContext, Page } from '@playwright/test'
+
+import { expect } from '@playwright/test'
+import { addArrayRow } from '__helpers/e2e/fields/array/index.js'
+import { addBlock } from '__helpers/e2e/fields/blocks/index.js'
+import { test } from '__helpers/e2e/playwright.js'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../../../__helpers/shared/sdk/index.js'
+import type { Config } from '../../payload-types.js'
+
+import {
+  saveDocAndAssert,
+  // throttleTest,
+} from '../../../__helpers/e2e/helpers.js'
+import { AdminUrlUtil } from '../../../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../../../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../../../__helpers/shared/initPayloadE2ENoConfig.js'
+import { RESTClient } from '../../../__helpers/shared/rest.js'
+import { ensureCompilationIsDone } from '../../../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../../../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../../../playwright.config.js'
+import { conditionalLogicSlug } from '../../slugs.js'
+
+const filename = fileURLToPath(import.meta.url)
+const currentFolder = path.dirname(filename)
+const dirname = path.resolve(currentFolder, '../../')
+
+const { beforeAll, beforeEach, describe } = test
+
+let payload: PayloadTestSDK<Config>
+let client: RESTClient
+let page: Page
+let serverURL: string
+let url: AdminUrlUtil
+let context: BrowserContext
+
+const toggleConditionAndCheckField = async (toggleLocator: string, fieldLocator: string) => {
+  const toggle = page.locator(toggleLocator)
+
+  if (!(await toggle.isChecked())) {
+    await expect(page.locator(fieldLocator)).toBeHidden()
+    await toggle.click()
+    await expect(page.locator(fieldLocator)).toBeVisible()
+  } else {
+    await expect(page.locator(fieldLocator)).toBeVisible()
+    await toggle.click()
+    await expect(page.locator(fieldLocator)).toBeHidden()
+  }
+}
+
+describe('Conditional Logic', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      // prebuild,
+    }))
+
+    url = new AdminUrlUtil(serverURL, conditionalLogicSlug)
+
+    context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  beforeEach(async () => {
+    // await throttleTest({
+    //   page,
+    //   context,
+    //   delay: 'Fast 4G',
+    // })
+
+    await reInitializeDB({
+      serverURL,
+    })
+
+    if (client) {
+      await client.logout()
+    }
+
+    client = new RESTClient({ defaultSlug: 'users', serverURL })
+    await client.login()
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  test("should conditionally render field based on another field's data", async () => {
+    await page.goto(url.create)
+
+    await toggleConditionAndCheckField(
+      'label[for=field-toggleField]',
+      'label[for=field-fieldWithCondition]',
+    )
+
+    expect(true).toBe(true)
+  })
+
+  test(
+    'ensure conditions receive document ID during form state request',
+    { framework: 'rsc' },
+    async () => {
+      await page.goto(url.create)
+
+      const fieldOnlyVisibleIfNoID = page.locator('#field-fieldWithDocIDCondition')
+
+      await expect(fieldOnlyVisibleIfNoID).toBeVisible()
+
+      const textField = page.locator('#field-text')
+      await textField.fill('some text')
+
+      await saveDocAndAssert(page)
+
+      await expect(fieldOnlyVisibleIfNoID).toBeHidden()
+
+      await textField.fill('updated text')
+      await page.waitForTimeout(1000)
+
+      await expect(fieldOnlyVisibleIfNoID).toBeHidden()
+    },
+  )
+
+  test('should conditionally render custom field that renders a Payload field', async () => {
+    await page.goto(url.create)
+
+    await toggleConditionAndCheckField(
+      'label[for=field-toggleField]',
+      'label[for=field-customFieldWithField]',
+    )
+
+    expect(true).toBe(true)
+  })
+
+  test('should conditionally render custom field that wraps itself with the withCondition HOC (legacy)', async () => {
+    await page.goto(url.create)
+
+    await toggleConditionAndCheckField(
+      'label[for=field-toggleField]',
+      'label[for=field-customFieldWithHOC]',
+    )
+
+    expect(true).toBe(true)
+  })
+
+  test('should toggle conditional custom client field', { framework: 'rsc' }, async () => {
+    await page.goto(url.create)
+    await toggleConditionAndCheckField('label[for=field-toggleField]', '#custom-client-field')
+    expect(true).toBe(true)
+  })
+
+  test('should conditionally render custom server field', { framework: 'rsc' }, async () => {
+    await page.goto(url.create)
+    await toggleConditionAndCheckField('label[for=field-toggleField]', '#custom-server-field')
+    expect(true).toBe(true)
+  })
+
+  test('should conditionally render rich text fields', async () => {
+    await page.goto(url.create)
+    await toggleConditionAndCheckField(
+      'label[for=field-toggleField]',
+      '.field-type.rich-text-lexical',
+    )
+    expect(true).toBe(true)
+  })
+
+  test('should show conditional field based on user data', async () => {
+    await page.goto(url.create)
+    const userConditional = page.locator('input#field-userConditional')
+    await expect(userConditional).toBeVisible()
+  })
+
+  test('should show conditional field based on nested field data', async () => {
+    await page.goto(url.create)
+
+    const parentGroupFields = page.locator(
+      'div#field-parentGroup > .group-field__wrap > .render-fields',
+    )
+    await expect(parentGroupFields).toHaveCount(1)
+
+    const toggle = page.locator('label[for=field-parentGroup__enableParentGroupFields]')
+    await toggle.click()
+
+    const toggledField = page.locator('input#field-parentGroup__siblingField')
+
+    await expect(toggledField).toBeVisible()
+  })
+
+  test('should show conditional field based on siblingData', async () => {
+    await page.goto(url.create)
+
+    const toggle = page.locator('label[for=field-parentGroup__enableParentGroupFields]')
+    await toggle.click()
+
+    const fieldRelyingOnSiblingData = page.locator('input#field-reliesOnParentGroup')
+    await expect(fieldRelyingOnSiblingData).toBeVisible()
+  })
+
+  test('should not render fields when adding array or blocks rows until form state returns', async () => {
+    await page.goto(url.create)
+    await addArrayRow(page, { fieldName: 'arrayWithConditionalField' })
+    const shimmer = '#field-arrayWithConditionalField .collapsible__content > .shimmer-effect'
+
+    await expect(page.locator(shimmer)).toBeVisible()
+
+    await expect(page.locator(shimmer)).toBeHidden()
+
+    // Do not use `waitForSelector` here, as it will wait for the selector to appear, not disappear
+    // eslint-disable-next-line playwright/no-wait-for-selector
+    const wasFieldAttached = await page
+      .waitForSelector('input#field-arrayWithConditionalField__0__textWithCondition', {
+        state: 'attached',
+        timeout: 100, // A small timeout to catch any transient rendering
+      })
+      .catch(() => false) // If it doesn't appear, this resolves to `false`
+
+    expect(wasFieldAttached).toBeFalsy()
+
+    const fieldToToggle = page.locator('input#field-enableConditionalFields')
+    await fieldToToggle.click()
+
+    await expect(
+      page.locator('input#field-arrayWithConditionalField__0__textWithCondition'),
+    ).toBeVisible()
+  })
+
+  test('should render field based on path argument', async () => {
+    await page.goto(url.create)
+
+    await addArrayRow(page, { fieldName: 'arrayOne' })
+
+    await addArrayRow(page, { fieldName: 'arrayOne__0__arrayTwo' })
+
+    await addArrayRow(page, { fieldName: 'arrayOne__0__arrayTwo__0__arrayThree' })
+
+    const numberField = page.locator('#field-arrayOne__0__arrayTwo__0__arrayThree__0__numberField')
+
+    await expect(numberField).toBeHidden()
+
+    const selectField = page.locator('#field-arrayOne__0__arrayTwo__0__selectOptions')
+
+    await selectField.click({ delay: 100 })
+    const options = page.locator('.rs__option')
+
+    await options.locator('text=Option Two').click()
+
+    await expect(numberField).toBeVisible()
+  })
+
+  test('should render field based on operation argument', async () => {
+    await page.goto(url.create)
+
+    const textField = page.locator('#field-text')
+    const fieldWithOperationCondition = page.locator('#field-fieldWithOperationCondition')
+
+    await textField.fill('some text')
+
+    await expect(fieldWithOperationCondition).toBeVisible()
+
+    await saveDocAndAssert(page)
+
+    await expect(fieldWithOperationCondition).toBeHidden()
+  })
+
+  test('should hide row field UI when admin.condition is false', async () => {
+    await page.goto(url.create)
+
+    await toggleConditionAndCheckField(
+      'label[for=field-toggleField]',
+      'label[for=field-rowFieldWithCondition]',
+    )
+  })
+
+  test('should hide entire tabs field UI when admin.condition is false', async () => {
+    await page.goto(url.create)
+
+    const tabsField = page.locator('.tabs-field').filter({
+      has: page.locator('button:has-text("Tab With Condition 1")'),
+    })
+
+    await expect(tabsField).toBeHidden()
+
+    const enableTabsToggle = page.locator('label[for=field-enableTabs]')
+    await enableTabsToggle.click()
+
+    await expect(tabsField).toBeVisible()
+    await expect(tabsField.locator('button:has-text("Tab With Condition 1")')).toBeVisible()
+
+    await enableTabsToggle.click()
+    await expect(tabsField).toBeHidden()
+  })
+
+  test('should toggle conditional field when radio changes inside a block', async () => {
+    await page.goto(url.create)
+
+    await addBlock({
+      blockToSelect: 'Block With Radio Condition',
+      fieldName: 'blocksWithRadioCondition',
+      page,
+    })
+
+    // Conditional field should be hidden (defaultValue: 'hide')
+    const conditionalField = page.locator(
+      '#field-blocksWithRadioCondition__0__conditionalTextField',
+    )
+    await expect(conditionalField).toBeHidden()
+
+    // Click "Show" radio and wait for form state response
+    const showRadio = page.locator('label:has(input[id*="radioTrigger-show"])')
+    await showRadio.click()
+
+    await expect(async () => {
+      await expect(conditionalField).toBeVisible()
+    }).toPass()
+
+    // Click "Hide" radio
+    const hideRadio = page.locator('label:has(input[id*="radioTrigger-hide"])')
+    await hideRadio.click()
+
+    await expect(async () => {
+      await expect(conditionalField).toBeHidden()
+    }).toPass()
+  })
+})

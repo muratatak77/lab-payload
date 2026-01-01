@@ -1,0 +1,59 @@
+---
+title: Respecting Access Control with Local API Operations
+label: Access Control
+order: 40
+desc: Learn how to implement and enforce access control in Payload's Local API operations, ensuring that the right permissions are respected during data manipulation.
+keywords: server functions, local API, Payload, CMS, access control, permissions, user context, server-side logic, custom workflows, data management, headless CMS, TypeScript, Node.js, backend
+---
+
+Local API operations that support `overrideAccess` now default it to `false` — they **respect Access Control by default**. A few operations do not expose this option, and `resetPassword` requires it explicitly.
+
+- `overrideAccess: false` (default where optional) — respect Access Control. Pass the authenticated `user` when the operation acts on their behalf; without one, Payload evaluates access as an anonymous request.
+- `overrideAccess: true` — skip Access Control. The operation runs with full permissions.
+
+<Banner type="warning">
+  In Payload 3 this property defaulted to `true`, which meant an operation that
+  said nothing skipped Access Control. See the [migration
+  guide](../migration-guide/v4#overrideaccess-now-defaults-to-false-on-local-api-operations).
+</Banner>
+
+### Respecting Access Control
+
+Use `overrideAccess: false` whenever the operation acts for a person — server functions, API routes, custom endpoints, and anything reached from the front end. Pass the authenticated `user` so Payload knows whose permissions to check.
+
+```ts
+const authedCreate = await payload.create({
+  collection: 'users',
+  overrideAccess: false, // access control is enforced
+  user, // whose permissions to check
+  data: {
+    email: 'test@test.com',
+    password: 'test',
+  },
+})
+```
+
+This creates the document only if `user` has permission to do so. Without the `user`, Payload treats the request as unauthenticated and applies the access rules for an anonymous visitor.
+
+### Skipping Access Control
+
+Use `overrideAccess: true` for trusted server-side work with no user behind it — seed scripts, migrations, cron jobs, and independently authenticated system integrations that are intended to run with full permissions.
+
+Treat webhooks according to the authority they represent. A webhook acting for a Payload user should pass that `user` with `overrideAccess: false`. After independently authenticating and authorizing a system webhook, use `overrideAccess: true` only when it is intentionally allowed to bypass Payload Access Control.
+
+```ts
+const seeded = await payload.create({
+  collection: 'users',
+  overrideAccess: true, // access control is skipped
+  data: {
+    email: 'test@test.com',
+    password: 'test',
+  },
+})
+```
+
+### Choosing a value
+
+Ask who the operation is for. If a person triggered it, pass their `user` — you can set `overrideAccess: false` explicitly, or simply omit the property, since that's now the default. If your server triggered it on its own schedule, set `overrideAccess: true` explicitly.
+
+When you are unsure, leave the default in place so that Payload enforces the configured Access Control instead of bypassing it.

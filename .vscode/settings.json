@@ -1,0 +1,37 @@
+{
+  "npm.packageManager": "pnpm",
+  "editor.defaultFormatter": "oxc.oxc-vscode",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.oxc": "explicit",
+    "source.fixAll.stylelint": "explicit"
+  },
+  "editor.formatOnSaveMode": "file",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "stylelint.enable": true,
+  "stylelint.validate": ["css", "scss"],
+  "css.validate": false,
+  "scss.validate": false,
+  // Prefer TS7's native language server for editor performance. Legacy TypeScript language
+  // service plugins, including @payloadcms/typescript-plugin, are not loaded in this mode.
+  "js/ts.experimental.useTsgo": true,
+  // `node_modules/typescript` is intentionally the TS6 compatibility API for ESLint.
+  // Point the native extension at the workspace-installed TS7 package instead.
+  "js/ts.tsdk.path": "node_modules/.pnpm/typescript@7.0.2/node_modules/typescript",
+  "js/ts.tsdk.promptToUseWorkspaceVersion": true,
+  // Load .git-blame-ignore-revs file
+  "gitlens.advanced.blame.customArguments": ["--ignore-revs-file", ".git-blame-ignore-revs"],
+  // Essentially disables bun test buttons
+  "bun.test.filePattern": "bun.test.ts",
+  "playwright.env": {
+    "PATH": "${env:HOME}/.local/share/mise/shims:${env:PATH}",
+    "NODE_OPTIONS": "--no-deprecation --no-experimental-strip-types"
+  },
+  "vitest.nodeEnv": {
+    // Ensure the node options match the ones we use for pnpm test:int. Otherwise, the behavior
+    // of the test run buttons in vscode will be different from CI, which can result to tests passing
+    // locally, and suddenly failing in CI.
+    "NODE_OPTIONS": "--no-deprecation --no-experimental-strip-types"
+  }
+}

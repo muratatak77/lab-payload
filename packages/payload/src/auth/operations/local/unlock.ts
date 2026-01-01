@@ -1,0 +1,41 @@
+import type {
+  AuthCollectionSlug,
+  AuthOperationsFromCollectionSlug,
+  Payload,
+  RequestContext,
+} from '../../../index.js'
+import type { PayloadRequest } from '../../../types/index.js'
+import type { SharedLocalAPIOptions } from '../../../types/operations.js'
+
+import { APIError } from '../../../errors/index.js'
+import { createPayloadRequest } from '../../../utilities/createPayloadRequest.js'
+import { unlockOperation } from '../unlock.js'
+
+export type Options<TSlug extends AuthCollectionSlug> = {
+  collection: TSlug
+  context?: RequestContext
+  data: AuthOperationsFromCollectionSlug<TSlug>['unlock']
+  req?: Partial<PayloadRequest>
+} & Pick<SharedLocalAPIOptions, 'overrideAccess'>
+
+export async function unlockLocal<TSlug extends AuthCollectionSlug>(
+  payload: Payload,
+  options: Options<TSlug>,
+): Promise<boolean> {
+  const { collection: collectionSlug, data, overrideAccess = false } = options
+
+  const collection = payload.collections[collectionSlug]
+
+  if (!collection) {
+    throw new APIError(
+      `The collection with slug ${String(collectionSlug)} can't be found. Unlock Operation.`,
+    )
+  }
+
+  return unlockOperation<TSlug>({
+    collection,
+    data,
+    overrideAccess,
+    req: await createPayloadRequest({ ...options, payload }),
+  })
+}

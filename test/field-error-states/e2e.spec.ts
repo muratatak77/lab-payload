@@ -1,0 +1,397 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { formatAdminURL, wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { Config } from './payload-types.js'
+
+import { addArrayRow, removeArrayRow } from '../__helpers/e2e/fields/array/index.js'
+import { addBlock } from '../__helpers/e2e/fields/blocks/index.js'
+import { getRoutes, saveDocAndAssert, waitForFormReady } from '../__helpers/e2e/helpers.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { ensureCompilationIsDone } from '../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { collectionSlugs } from './shared.js'
+
+const { beforeAll, beforeEach, describe } = test
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+describe('Field Error States', () => {
+  let serverURL: string
+  let validateDraftsOff: AdminUrlUtil
+  let validateDraftsOn: AdminUrlUtil
+  let validateDraftsOnAutosave: AdminUrlUtil
+  let prevValue: AdminUrlUtil
+  let prevValueRelation: AdminUrlUtil
+  let errorFieldsURL: AdminUrlUtil
+  let tabErrorReset: AdminUrlUtil
+  let adminRoute: string
+
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ serverURL } = await initPayloadE2ENoConfig<Config>({ dirname }))
+    validateDraftsOff = new AdminUrlUtil(serverURL, collectionSlugs.validateDraftsOff!)
+    validateDraftsOn = new AdminUrlUtil(serverURL, collectionSlugs.validateDraftsOn!)
+    validateDraftsOnAutosave = new AdminUrlUtil(
+      serverURL,
+      collectionSlugs.validateDraftsOnAutosave!,
+    )
+    prevValue = new AdminUrlUtil(serverURL, collectionSlugs.prevValue!)
+    prevValueRelation = new AdminUrlUtil(serverURL, collectionSlugs.prevValueRelation!)
+    errorFieldsURL = new AdminUrlUtil(serverURL, collectionSlugs.errorFields!)
+    tabErrorReset = new AdminUrlUtil(serverURL, collectionSlugs.tabErrorReset!)
+
+    const {
+      routes: { admin: adminRouteFromConfig },
+    } = getRoutes({})
+    adminRoute = adminRouteFromConfig
+  })
+
+  beforeEach(async ({ page }) => {
+    await initPage({ page, serverURL })
+
+    await reInitializeDB({
+      serverURL,
+    })
+  })
+
+  test('Remove row should remove error states from parent fields', async ({ page }) => {
+    await page.goto(
+      formatAdminURL({ adminRoute, path: '/collections/error-fields/create', serverURL }),
+    )
+    await waitForFormReady(page)
+    // add parent array
+    await addArrayRow(page, { fieldName: 'parentArray' })
+
+    // add first child array
+    await page.locator('#parentArray-row-0 .collapsible__content .array-field__add-row').click()
+    await page.locator('#field-parentArray__0__childArray__0__childArrayText').focus()
+    await page.keyboard.type('T1')
+
+    // add second child array
+    await page.locator('#parentArray-row-0 .collapsible__content .array-field__add-row').click()
+    await page.locator('#field-parentArray__0__childArray__1__childArrayText').focus()
+    await page.keyboard.type('T2')
+
+    // add third child array
+    await page.locator('#parentArray-row-0 .collapsible__content .array-field__add-row').click()
+
+    await removeArrayRow(page, {
+      fieldName: 'parentArray__0__childArray',
+      rowIndex: 2,
+    })
+
+    await page.locator('#action-save').click()
+
+    const errorPill = await page.waitForSelector(
+      '#parentArray-row-0 > .collapsible > .collapsible__toggle-wrap .array-field__row-error-pill',
+      { state: 'hidden', timeout: 500 },
+    )
+
+    expect(errorPill).toBeNull()
+  })
+
+  describe('draft validations', () => {
+    test('should not validate drafts by default', async ({ page }) => {
+      await page.goto(validateDraftsOff.create)
+      await waitForFormReady(page)
+      await saveDocAndAssert(page, '#action-save-draft')
+    })
+
+    test('should validate drafts when enabled', async ({ page }) => {
+      await page.goto(validateDraftsOn.create)
+      await waitForFormReady(page)
+      await saveDocAndAssert(page, '#action-save-draft', 'error')
+    })
+
+    test('should show validation errors when validate and autosave are enabled', async ({
+      page,
+    }) => {
+      await page.goto(validateDraftsOnAutosave.create)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('valid')
+      await saveDocAndAssert(page)
+      await page.locator('#field-title').fill('')
+      await saveDocAndAssert(page, '#action-save', 'error')
+    })
+
+    test('should keep save draft button enabled after validation failure on update', async ({
+      page,
+    }) => {
+      await page.goto(validateDraftsOn.create)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('Test Document')
+      await page.click('#action-save-draft')
+      await expect(page.locator('.payload-toast-container .toast-success')).toBeVisible()
+
+      await page.waitForURL(/\/admin\/collections\/validate-drafts-on\/[a-zA-Z0-9]+/)
+
+      await page.locator('#field-title').fill('Modified Document')
+      await page.locator('#field-failValidation').check()
+      await page.locator('#field-validatedField').fill('This will fail')
+
+      await saveDocAndAssert(page, '#action-save-draft', 'error')
+
+      const saveDraftButton = page.locator('#action-save-draft')
+      await expect(saveDraftButton).toBeEnabled()
+
+      await saveDocAndAssert(page, '#action-save-draft', 'error')
+    })
+
+    test('should keep save draft button enabled after successful save when form is modified again', async ({
+      page,
+    }) => {
+      await page.goto(validateDraftsOn.create)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('Test Document')
+      await page.click('#action-save-draft')
+      await expect(page.locator('.payload-toast-container .toast-success')).toBeVisible()
+
+      await page.locator('#field-title').fill('Modified Document')
+
+      const saveDraftButton = page.locator('#action-save-draft')
+      await expect(saveDraftButton).toBeEnabled()
+    })
+  })
+
+  describe('previous values', () => {
+    test('should pass previous value into validate function', async ({ page }) => {
+      // save original
+      await page.goto(prevValue.create)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('original value')
+      await saveDocAndAssert(page)
+      await page.locator('#field-title').fill('original value 2')
+      await saveDocAndAssert(page)
+      await wait(500)
+
+      // create relation to doc - select by title to avoid picking old test data
+      await page.goto(prevValueRelation.create)
+      await waitForFormReady(page)
+      await page.locator('#field-previousValueRelation .react-select').click()
+      await page.locator('.rs__option', { hasText: 'original value 2' }).last().click()
+      await saveDocAndAssert(page)
+
+      // go back to doc
+      await page.goto(prevValue.list)
+      // Wait for hydration
+      await wait(1000)
+      await page.locator('.row-1 a').click()
+      await waitForFormReady(page)
+      await page.locator('#field-description').fill('some description')
+      await saveDocAndAssert(page)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('changed')
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      // ensure value is the value before relationship association
+      await page.reload()
+      await expect(page.locator('#field-title')).toHaveValue('original value 2')
+    })
+  })
+
+  describe('error field types', () => {
+    async function prefillHomeAndHeroTabs(page: Page) {
+      const homeTabLocator = page.locator('.tabs-field__tab-button', {
+        hasText: 'Home',
+      })
+      const heroTabLocator = page.locator('.tabs-field__tab-button', {
+        hasText: 'Hero',
+      })
+
+      await homeTabLocator.click()
+      // fill out all required fields in the home tab
+      await page.locator('#field-home__text').fill('Home Collapsible Text')
+      await page.locator('#field-home__tabText').fill('Home Tab Text')
+
+      await page.locator('#field-group__text').fill('Home Group Text')
+      await heroTabLocator.click()
+      // fill out all required fields in the hero tab
+      await page.locator('#field-tabText').fill('Hero Tab Text')
+      await page.locator('#field-text').fill('Hero Tab Collapsible Text')
+    }
+
+    async function prefillBaseRequiredFields(page: Page) {
+      await prefillHomeAndHeroTabs(page)
+
+      // fill out new tabs with required arrays
+      const tabWithRequiredArrayButton = page.getByRole('tab', {
+        name: 'Tab with Required Array',
+        exact: true,
+      })
+      await tabWithRequiredArrayButton.click()
+      await addArrayRow(page, { fieldName: 'tabWithRequiredArray__requiredArray' })
+      await page.locator('#field-tabWithRequiredArray__requiredArray__0__arrayText').fill('Test')
+
+      const unnamedTabButton = page.getByRole('tab', {
+        name: 'Unnamed Tab with Required Array',
+        exact: true,
+      })
+      await unnamedTabButton.click()
+      await addArrayRow(page, { fieldName: 'unnamedRequiredArray' })
+      await page.locator('#field-unnamedRequiredArray__0__arrayText').fill('Test')
+    }
+    test('group errors', async ({ page }) => {
+      await page.goto(errorFieldsURL.create)
+      await waitForFormReady(page)
+      await prefillBaseRequiredFields(page)
+
+      // clear group and save
+      await page.locator('#field-group__text').fill('')
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      // should show the error pill and count
+      const groupFieldErrorPill = page.locator('#field-group .group-field__header .error-pill', {
+        hasText: '1 error',
+      })
+      await expect(groupFieldErrorPill).toBeVisible()
+
+      // finish filling out the group
+      await page.locator('#field-group__text').fill('filled out')
+
+      await expect(page.locator('#field-group .group-field__header .error-pill')).toBeHidden()
+      await saveDocAndAssert(page, '#action-save')
+    })
+
+    test('tab error badge with required array field', async ({ page }) => {
+      await page.goto(errorFieldsURL.create)
+      await waitForFormReady(page)
+      await prefillHomeAndHeroTabs(page)
+
+      const tabWithRequiredArrayButton = page.getByRole('tab', {
+        name: 'Tab with Required Array',
+        exact: true,
+      })
+      await tabWithRequiredArrayButton.click()
+
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      // should show the error badge on the tab
+      const tabErrorBadge = page.locator('.tabs-field__tab-button--active .error-pill')
+      await expect(tabErrorBadge).toBeVisible({ timeout: 10000 })
+      await expect(tabErrorBadge).toContainText('1')
+
+      // fill out the required array
+      await addArrayRow(page, { fieldName: 'tabWithRequiredArray__requiredArray' })
+      await page.locator('#field-tabWithRequiredArray__requiredArray__0__arrayText').fill('Test')
+
+      // error badge should disappear
+      await expect(tabErrorBadge).toBeHidden()
+    })
+
+    test('tab error badge with unnamed tab and required array field', async ({ page }) => {
+      await page.goto(errorFieldsURL.create)
+      await waitForFormReady(page)
+      await prefillHomeAndHeroTabs(page)
+
+      const unnamedTabButton = page.locator('.tabs-field__tab-button', {
+        hasText: 'Unnamed Tab with Required Array',
+      })
+      await unnamedTabButton.click()
+
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      // should show the error badge on the tab
+      const tabErrorBadge = page.locator('.tabs-field__tab-button--active .error-pill')
+      await expect(tabErrorBadge).toBeVisible({ timeout: 10000 })
+      await expect(tabErrorBadge).toContainText('1')
+
+      // fill out the required array
+      await addArrayRow(page, { fieldName: 'unnamedRequiredArray' })
+      await page.locator('#field-unnamedRequiredArray__0__arrayText').fill('Test')
+
+      // error badge should disappear
+      await expect(tabErrorBadge).toBeHidden()
+    })
+
+    test('array error pill should show for minRows errors before child edits', async ({ page }) => {
+      await page.goto(errorFieldsURL.create)
+      await waitForFormReady(page)
+      await prefillBaseRequiredFields(page)
+
+      await addArrayRow(page, { fieldName: 'arrayWithMinRows' })
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      const arrayErrorPill = page.locator(
+        '#field-arrayWithMinRows .array-field__header .error-pill',
+      )
+      await expect(arrayErrorPill).toBeVisible()
+      await expect(arrayErrorPill).toContainText('1 error')
+      await expect(
+        page.locator('#field-arrayWithMinRows .banner.banner--type-danger'),
+      ).toBeVisible()
+      await expect(page.locator('.field-error')).toHaveCount(0)
+    })
+
+    test('blocks error pill should show for minRows errors before child edits', async ({
+      page,
+    }) => {
+      await page.goto(errorFieldsURL.create)
+      await waitForFormReady(page)
+      await prefillBaseRequiredFields(page)
+
+      await addBlock({
+        blockToSelect: 'Min Rows Block',
+        fieldName: 'blocksWithMinRows',
+        page,
+      })
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      const blocksErrorPill = page.locator(
+        '#field-blocksWithMinRows .blocks-field__header .error-pill',
+      )
+      await expect(blocksErrorPill).toBeVisible()
+      await expect(blocksErrorPill).toContainText('1 error')
+      await expect(
+        page.locator('#field-blocksWithMinRows .banner.banner--type-danger'),
+      ).toBeVisible()
+      await expect(page.locator('.field-error')).toHaveCount(0)
+    })
+  })
+
+  describe('tab error badge reset', () => {
+    test('should clear tab error badge after fixing a child field and re-saving', async ({
+      page,
+    }) => {
+      // Create a valid document so we land on the edit view (no redirect on subsequent saves).
+      await page.goto(tabErrorReset.create)
+      await waitForFormReady(page)
+      await page.locator('#field-title').fill('Reset badge')
+      await page.locator('#field-errorTab__requiredInTab').fill('valid')
+      await saveDocAndAssert(page, '#action-save')
+
+      // Clear the required child field and save -> the tab shows an error badge.
+      await page.locator('#field-errorTab__requiredInTab').fill('')
+      await saveDocAndAssert(page, '#action-save', 'error')
+
+      const tabErrorBadge = page.locator('.tabs-field__tab-button--active .error-pill')
+      await expect(tabErrorBadge).toBeVisible()
+      await expect(tabErrorBadge).toContainText('1')
+
+      // Fix the field and save in the same tick. This coalesces the throttled error
+      // recompute with the successful-save state transition (submitted -> false), which
+      // previously left the tab badge stranded because the recompute was gated on the
+      // submitted flag still being true.
+      await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>('#field-errorTab__requiredInTab')!
+        const nativeSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          'value',
+        )!.set!
+        nativeSetter.call(input, 'fixed')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        document.querySelector<HTMLButtonElement>('#action-save')!.click()
+      })
+
+      // The save succeeds and the field-level error clears, so the tab badge must clear too.
+      await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+      await expect(tabErrorBadge).toBeHidden()
+    })
+  })
+})

@@ -1,0 +1,134 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/*
+ * Copyright (c) 2014, Hugh Kennedy
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Copyright (c) 2020, Feross Aboukhadijeh <https://feross.org>
+ * Reference: https://www.npmjs.com/package/is-buffer
+ * All rights reserved.
+ */
+import { hasUnsupportedFieldPathSegment, setOwnProperty } from './fieldPath.js'
+
+function isBuffer(obj: any) {
+  return (
+    obj != null &&
+    obj.constructor != null &&
+    typeof obj.constructor.isBuffer === 'function' &&
+    obj.constructor.isBuffer(obj)
+  )
+}
+
+interface Opts {
+  delimiter?: string
+  object?: any
+  /**
+   * Allows descendant paths to replace scalar values or populate explicit empty arrays.
+   *
+   * @example
+   * unflatten({ person: 'Ada', 'person.me': true }, { overwrite: false })
+   * // { person: 'Ada' }
+   *
+   * unflatten({ person: 'Ada', 'person.me': true }, { overwrite: true })
+   * // { person: { me: true } }
+   *
+   * @example
+   * unflatten({ items: [], 'items.0.name': 'Milk' }, { overwrite: false })
+   * // { items: [] }
+   *
+   * unflatten({ items: [], 'items.0.name': 'Milk' }, { overwrite: true })
+   * // { items: [{ name: 'Milk' }] }
+   */
+  overwrite?: boolean
+  recursive?: boolean
+}
+
+export const unflatten = (target: any, opts?: Opts) => {
+  opts = opts || {}
+
+  const delimiter = opts.delimiter || '.'
+  const overwrite = opts.overwrite || false
+  const recursive = opts.recursive || false
+  const result = {}
+
+  const isbuffer = isBuffer(target)
+
+  if (isbuffer || Object.prototype.toString.call(target) !== '[object Object]') {
+    return target
+  }
+
+  // safely ensure that the key is an integer.
+  const getkey = (key: any) => {
+    const parsedKey = Number(key)
+    return isNaN(parsedKey) || key.indexOf('.') !== -1 || opts.object ? key : parsedKey
+  }
+
+  const sortedKeys = Object.keys(target).sort((keyA, keyB) => keyA.length - keyB.length)
+  const explicitEmptyArrays = overwrite ? undefined : new Set<unknown>()
+
+  sortedKeys.forEach((key) => {
+    const split = key.split(delimiter)
+
+    if (hasUnsupportedFieldPathSegment({ segments: split })) {
+      return
+    }
+
+    let key1 = getkey(split.shift())
+    let key2 = getkey(split[0])
+    let recipient = result as Record<string, any>
+
+    while (key2 !== undefined) {
+      const currentValue = Object.hasOwn(recipient, key1) ? recipient[key1] : undefined
+      const type = Object.prototype.toString.call(currentValue)
+      const isobject = type === '[object Object]' || type === '[object Array]'
+
+      // Preserve scalar values and explicit empty arrays unless overwriting is enabled.
+      // An explicit empty array can represent a cleared list, so stale descendants must not repopulate it.
+      // Objects and nonempty arrays remain mergeable.
+      if (
+        !overwrite &&
+        ((!isobject && typeof currentValue !== 'undefined') ||
+          explicitEmptyArrays?.has(currentValue))
+      ) {
+        return
+      }
+
+      if ((overwrite && !isobject) || (!overwrite && currentValue == null)) {
+        setOwnProperty({
+          key: key1,
+          target: recipient,
+          value: typeof key2 === 'number' && !opts.object ? [] : {},
+        })
+      }
+
+      recipient = recipient[key1]
+
+      if (split.length > 0) {
+        key1 = getkey(split.shift())
+        key2 = getkey(split[0])
+      }
+    }
+
+    const value = recursive ? unflatten(target[key], opts) : target[key]
+
+    if (explicitEmptyArrays && Array.isArray(value) && value.length === 0) {
+      explicitEmptyArrays.add(value)
+    }
+
+    setOwnProperty({
+      key: key1,
+      target: recipient,
+      value,
+    })
+  })
+
+  return result
+}

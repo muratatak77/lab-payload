@@ -1,0 +1,46 @@
+import { fileURLToPath } from 'node:url'
+import path from 'path'
+
+import { buildConfigWithDefaults } from '../buildConfigWithDefaults.js'
+import { AutosaveCollection } from './collections/Autosave/index.js'
+import { PagesCollection } from './collections/Pages/index.js'
+import { PostsCollection } from './collections/Posts/index.js'
+import { ServerComponentsCollection } from './collections/ServerComponents/index.js'
+import { SimpleCollection } from './collections/Simple/index.js'
+import { SimpleWithVersionsCollection } from './collections/SimpleWithVersions/index.js'
+import { TestsCollection } from './collections/Tests/index.js'
+import { Users } from './collections/Users/index.js'
+import { AdminGlobal } from './globals/Admin/index.js'
+import { AutosaveGlobal } from './globals/AutosaveGlobal/index.js'
+import { GlobalWithVersions } from './globals/GlobalWithVersions/index.js'
+import { MenuGlobal } from './globals/Menu/index.js'
+import { seed } from './seed.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+export default buildConfigWithDefaults({
+  suite: 'locked-documents',
+  config: {
+    admin: {
+      importMap: {
+        baseDir: path.resolve(dirname),
+      },
+    },
+    collections: [
+      AutosaveCollection,
+      PagesCollection,
+      PostsCollection,
+      ServerComponentsCollection,
+      SimpleCollection,
+      SimpleWithVersionsCollection,
+      TestsCollection,
+      Users,
+    ],
+    globals: [AdminGlobal, AutosaveGlobal, GlobalWithVersions, MenuGlobal],
+    typescript: {
+      outputFile: path.resolve(dirname, 'payload-types.ts'),
+    },
+  },
+  seed,
+})

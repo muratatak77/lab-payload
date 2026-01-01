@@ -1,0 +1,81 @@
+import React from 'react'
+
+import type { SerializedNodeBase } from '../../../../types/index.js'
+import type {
+  DefaultNodeTypes,
+  SerializedBlockNode,
+  SerializedInlineBlockNode,
+} from '../../../../types/nodeTypes.js'
+import type { JSXConverters } from '../converter/types.js'
+
+import { defaultJSXConverters } from '../converter/defaultConverters.js'
+import { convertLexicalToJSX, type ConvertLexicalToJSXArgs } from '../converter/index.js'
+
+export type JSXConvertersFunction<
+  T extends SerializedNodeBase =
+    | DefaultNodeTypes
+    | SerializedBlockNode<{ blockName?: null | string; blockType: string }>
+    | SerializedInlineBlockNode<{ blockName?: null | string; blockType: string }>,
+> = (args: { defaultConverters: JSXConverters<T> }) => JSXConverters<T>
+
+type RichTextProps<TNodes extends SerializedNodeBase = SerializedNodeBase> = {
+  /**
+   * Override class names for the container.
+   */
+  className?: string
+  /**
+   * Custom converters to transform your nodes to JSX. Can be an object or a function that receives the default converters.
+   */
+  converters?: JSXConverters<TNodes> | JSXConvertersFunction<TNodes>
+
+  /**
+   * If true, removes the container div wrapper.
+   */
+  disableContainer?: boolean
+} & Pick<ConvertLexicalToJSXArgs<TNodes>, 'data' | 'disableIndent' | 'disableTextAlign' | 'nodeMap'>
+
+export function RichText<TNodes extends SerializedNodeBase = SerializedNodeBase>({
+  className,
+  converters,
+  data: editorState,
+  disableContainer,
+  disableIndent,
+  disableTextAlign,
+  nodeMap,
+}: RichTextProps<TNodes>): React.ReactNode {
+  if (!editorState) {
+    return null
+  }
+
+  const baseConverters = converters as JSXConverters | JSXConvertersFunction | undefined
+
+  let finalConverters: JSXConverters = {}
+  if (baseConverters) {
+    if (typeof baseConverters === 'function') {
+      finalConverters = baseConverters({ defaultConverters: defaultJSXConverters })
+    } else {
+      finalConverters = baseConverters
+    }
+  } else {
+    finalConverters = defaultJSXConverters
+  }
+
+  const content =
+    editorState &&
+    !Array.isArray(editorState) &&
+    typeof editorState === 'object' &&
+    'root' in editorState &&
+    convertLexicalToJSX({
+      converters: finalConverters,
+      data: editorState,
+      disableIndent,
+      disableTextAlign,
+      nodeMap,
+    })
+
+  if (disableContainer) {
+    return <>{content}</>
+  }
+
+  return <div className={className ?? 'payload-richtext'}>{content}</div>
+}

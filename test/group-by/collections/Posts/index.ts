@@ -1,0 +1,82 @@
+import type { CollectionConfig } from 'payload'
+
+import { categoriesSlug } from '../Categories/index.js'
+
+export const postsSlug = 'posts'
+
+export const PostsCollection: CollectionConfig = {
+  slug: postsSlug,
+  admin: {
+    useAsTitle: 'title',
+    defaultColumns: ['title', 'category', 'createdAt', 'updatedAt'],
+  },
+  enableQueryPresets: true,
+  trash: true,
+  fields: [
+    {
+      name: 'title',
+      type: 'text',
+    },
+    {
+      name: 'category',
+      type: 'relationship',
+      relationTo: categoriesSlug,
+    },
+    {
+      name: 'virtualTitleFromCategory',
+      type: 'text',
+      virtual: 'category.title',
+      admin: {
+        disabled: { groupBy: true },
+      },
+    },
+    {
+      name: 'page',
+      type: 'relationship',
+      relationTo: 'pages',
+    },
+    {
+      name: 'virtualTitleFromPage',
+      type: 'text',
+      virtual: 'page.title',
+    },
+    {
+      name: 'checkbox',
+      type: 'checkbox',
+    },
+    {
+      name: 'date',
+      type: 'date',
+    },
+    {
+      type: 'tabs',
+      tabs: [
+        {
+          label: 'Tab 1',
+          fields: [
+            {
+              name: 'tab1Field',
+              type: 'text',
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'meta',
+      type: 'group',
+      fields: [
+        {
+          name: 'metaTitle',
+          type: 'text',
+        },
+        {
+          name: 'metaDescription',
+          type: 'text',
+          label: false,
+        },
+      ],
+    },
+  ],
+  versions: false,
+}

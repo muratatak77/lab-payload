@@ -1,0 +1,1103 @@
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+import { expect } from 'vitest'
+
+import { test } from '../__helpers/int/vitest.js'
+import { devUser } from '../credentials.js'
+import { pagesSlug, postsSlug } from './shared.js'
+
+let token: string
+
+test.suite('@payloadcms/plugin-search', { config: './config.ts' }, () => {
+  test.beforeEach(async ({ restClient }) => {
+    const data = await restClient
+      .POST('/users/login', {
+        body: JSON.stringify({
+          email: devUser.email,
+          password: devUser.password,
+        }),
+      })
+      .then((res) => res.json())
+
+    token = data.token
+  })
+
+  test.beforeEach(async ({ payload }) => {
+    await payload.delete({
+      collection: 'search',
+      depth: 0,
+      where: {
+        id: {
+          exists: true,
+        },
+      },
+      overrideAccess: true,
+    })
+    await Promise.all([
+      payload.delete({
+        collection: postsSlug,
+        depth: 0,
+        where: {
+          id: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      }),
+      payload.delete({
+        collection: pagesSlug,
+        depth: 0,
+        where: {
+          id: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      }),
+    ])
+  })
+
+  test('should add a search collection', async ({ payload }) => {
+    const search = await payload.find({
+      collection: 'search',
+      depth: 0,
+      limit: 1,
+      overrideAccess: true,
+    })
+
+    expect(search).toBeTruthy()
+  })
+
+  test('should not inject authorship fields into the internal search collection', ({ payload }) => {
+    const fields = payload.collections['search'].config.fields
+    const names = fields.filter((f) => 'name' in f).map((f) => (f as { name: string }).name)
+
+    expect(names).not.toContain('createdBy')
+    expect(names).not.toContain('updatedBy')
+  })
+
+  test('should sync published pages to the search collection', async ({ payload }) => {
+    const pageToSync = await payload.create({
+      collection: 'pages',
+      data: {
+        _status: 'published',
+        excerpt: 'This is a test page',
+        title: 'Hello, world!',
+      },
+      overrideAccess: true,
+    })
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: pageToSync.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].doc.value).toBe(pageToSync.id)
+    expect(results[0].title).toBe('Hello, world!')
+    expect(results[0].excerpt).toBe('This is a test page')
+  })
+
+  test('should not sync drafts pages to the search collection', async ({ payload }) => {
+    const draftPage = await payload.create({
+      collection: 'pages',
+      data: {
+        _status: 'draft',
+        excerpt: 'This is a test page',
+        title: 'Hello, world!',
+      },
+      overrideAccess: true,
+    })
+
+    // wait for the search document to be potentially created
+    // we do not await this within the `syncToSearch` hook
+    await wait(200)
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: draftPage.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(results).toHaveLength(0)
+  })
+
+  test('should not delete a search doc if a published item has a new draft but remains published', async ({
+    payload,
+  }) => {
+    const publishedPage = await payload.create({
+      collection: 'pages',
+      data: {
+        _status: 'published',
+        title: 'Published title!',
+      },
+      overrideAccess: true,
+    })
+
+    // wait for the search document to be potentially created
+    // we do not await this within the `syncToSearch` hook
+    await wait(200)
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: publishedPage.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(results).toHaveLength(1)
+
+    // Create a new draft
+    await payload.update({
+      collection: 'pages',
+      id: publishedPage.id,
+      draft: true,
+      data: {
+        _status: 'draft',
+        title: 'Draft title!',
+      },
+      overrideAccess: true,
+    })
+
+    // This should remain with the published content
+    const { docs: updatedResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: publishedPage.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(updatedResults).toHaveLength(1)
+
+    await payload.update({
+      collection: 'pages',
+      id: publishedPage.id,
+      data: {
+        _status: 'draft',
+        title: 'Drafted again',
+      },
+      overrideAccess: true,
+    })
+
+    // Should now be deleted given we've unpublished the page
+    const { docs: deletedResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: publishedPage.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(deletedResults).toHaveLength(0)
+  })
+
+  test('should sync changes made to an existing search document', async ({ payload }) => {
+    const pageToReceiveUpdates = await payload.create({
+      collection: 'pages',
+      data: {
+        _status: 'published',
+        excerpt: 'This is a test page',
+        title: 'Hello, world!',
+      },
+      overrideAccess: true,
+    })
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: pageToReceiveUpdates.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].doc.value).toBe(pageToReceiveUpdates.id)
+    expect(results[0].title).toBe('Hello, world!')
+    expect(results[0].excerpt).toBe('This is a test page')
+
+    await payload.update({
+      id: pageToReceiveUpdates.id,
+      collection: 'pages',
+      data: {
+        excerpt: 'This is a test page (updated)',
+        title: 'Hello, world! (updated)',
+      },
+      overrideAccess: true,
+    })
+
+    // wait for the search document to be potentially updated
+    // we do not await this within the `syncToSearch` hook
+    await wait(200)
+
+    // Do not add `limit` to this query, this way we can test if multiple documents were created
+    const { docs: updatedResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: pageToReceiveUpdates.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(updatedResults).toHaveLength(1)
+    expect(updatedResults[0].doc.value).toBe(pageToReceiveUpdates.id)
+    expect(updatedResults[0].title).toBe('Hello, world! (updated)')
+    expect(updatedResults[0].excerpt).toBe('This is a test page (updated)')
+  })
+
+  test('should clear the search document when the original document is deleted', async ({
+    payload,
+  }) => {
+    const page = await payload.create({
+      collection: 'pages',
+      data: {
+        _status: 'published',
+        excerpt: 'This is a test page',
+        title: 'Hello, world!',
+      },
+      overrideAccess: true,
+    })
+
+    // wait for the search document to be created
+    // we do not await this within the `syncToSearch` hook
+    await wait(200)
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: page.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].doc.value).toBe(page.id)
+
+    await payload.delete({
+      id: page.id,
+      collection: 'pages',
+      overrideAccess: true,
+    })
+
+    // wait for the search document to be potentially deleted
+    // we do not await this within the `syncToSearch` hook
+    await wait(200)
+
+    const { docs: deletedResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        id: {
+          equals: results[0].id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(deletedResults).toHaveLength(0)
+  })
+
+  test('should clear the proper search document when having the same doc.value but different doc.relationTo', async ({
+    payload,
+  }) => {
+    const custom_id_1 = await payload.create({
+      collection: 'custom-ids-1',
+      data: { id: 'custom_id' },
+      overrideAccess: true,
+    })
+
+    await payload.create({
+      collection: 'custom-ids-2',
+      data: { id: 'custom_id' },
+      overrideAccess: true,
+    })
+
+    await wait(200)
+
+    const {
+      docs: [docBefore],
+    } = await payload.find({
+      collection: 'search',
+      where: { 'doc.value': { equals: 'custom_id' } },
+      limit: 1,
+      sort: 'createdAt',
+      overrideAccess: true,
+    })
+
+    expect(docBefore.doc.relationTo).toBe('custom-ids-1')
+
+    await payload.delete({ collection: 'custom-ids-1', id: custom_id_1.id, overrideAccess: true })
+
+    await wait(200)
+
+    const {
+      docs: [docAfter],
+    } = await payload.find({
+      collection: 'search',
+      where: { 'doc.value': { equals: 'custom_id' } },
+      limit: 1,
+      sort: 'createdAt',
+      overrideAccess: true,
+    })
+
+    expect(docAfter.doc.relationTo).toBe('custom-ids-2')
+  })
+
+  test('should sync localized data', async ({ payload }) => {
+    const createdDoc = await payload.create({
+      collection: 'posts',
+      data: {
+        _status: 'published',
+        title: 'test title',
+        slug: 'es',
+      },
+      locale: 'es',
+      overrideAccess: true,
+    })
+
+    await payload.update({
+      collection: 'posts',
+      id: createdDoc.id,
+      data: {
+        _status: 'published',
+        title: 'test title',
+        slug: 'en',
+      },
+      locale: 'en',
+      overrideAccess: true,
+    })
+
+    const syncedSearchData = await payload.find({
+      collection: 'search',
+      locale: 'es',
+      where: {
+        and: [
+          {
+            'doc.value': {
+              equals: createdDoc.id,
+            },
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+
+    expect(syncedSearchData.docs[0].slug).toEqual('es')
+  })
+
+  test('should respond with 401 when invalid permissions on user before reindex', async ({
+    payload,
+    restClient,
+  }) => {
+    const testCreds = {
+      email: 'test@payloadcms.com',
+      password: 'test',
+    }
+
+    await payload.create({
+      collection: 'users',
+      data: testCreds,
+      overrideAccess: true,
+    })
+
+    const testUserRes = await restClient.POST(`/users/login`, {
+      body: JSON.stringify(testCreds),
+    })
+
+    const testUser = await testUserRes.json()
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: [postsSlug],
+      }),
+      headers: {
+        Authorization: `JWT ${testUser.token}`,
+      },
+    })
+
+    expect(endpointRes.status).toEqual(401)
+  })
+
+  test('should respond with 400 when invalid collection args passed to reindex', async ({
+    restClient,
+  }) => {
+    const endpointNoArgsRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({}),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    const endpointEmptyArrRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: [],
+      }),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    const endpointInvalidArrRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: ['users'],
+      }),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    expect(endpointNoArgsRes.status).toBe(400)
+    expect(endpointEmptyArrRes.status).toBe(400)
+    expect(endpointInvalidArrRes.status).toBe(400)
+  })
+
+  test('should delete existing search indexes before reindexing', async ({
+    payload,
+    restClient,
+  }) => {
+    await payload.create({
+      collection: postsSlug,
+      data: {
+        title: 'post_1',
+        _status: 'published',
+      },
+      overrideAccess: true,
+    })
+
+    await wait(200)
+
+    await payload.create({
+      collection: postsSlug,
+      data: {
+        title: 'post_2',
+        _status: 'published',
+      },
+      overrideAccess: true,
+    })
+
+    const { docs } = await payload.find({ collection: 'search', overrideAccess: true })
+
+    await wait(200)
+
+    const endpointRes = await restClient.POST('/search/reindex', {
+      body: JSON.stringify({
+        collections: [postsSlug],
+      }),
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    await wait(200)
+
+    const { docs: results } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        id: {
+          in: docs.map((doc) => doc.id),
+        },
+      },
+      overrideAccess: true,
+    })
+
+    // Should have no docs with these ID
+    // after reindex since it deletes indexes and recreates them
+    expect(results).toHaveLength(0)
+  })
+
+  test('should reindex whole collections', async ({ payload, restClient }) => {
+    await Promise.all([
+      payload.create({
+        collection: pagesSlug,
+        data: {
+          title: 'Test page title',
+          _status: 'published',
+        },
+        overrideAccess: true,
+      }),
+      payload.create({
+        collection: postsSlug,
+        data: {
+          title: 'Test page title',
+          _status: 'published',
+        },
+        overrideAccess: true,
+      }),
+    ])
+
+    await wait(200)
+
+    const { totalDocs: totalBeforeReindex } = await payload.count({
+      collection: 'search',
+      overrideAccess: true,
+    })
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: [postsSlug, pagesSlug],
+      }),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    const { totalDocs: totalAfterReindex } = await payload.count({
+      collection: 'search',
+      overrideAccess: true,
+    })
+
+    expect(totalAfterReindex).toBe(totalBeforeReindex)
+  })
+
+  test('should report correct aggregate counts when reindexing multiple collections', async ({
+    payload,
+    restClient,
+  }) => {
+    await Promise.all([
+      payload.create({
+        collection: postsSlug,
+        data: { title: 'Post one', _status: 'published' },
+        overrideAccess: true,
+      }),
+      payload.create({
+        collection: postsSlug,
+        data: { title: 'Post two', _status: 'published' },
+        overrideAccess: true,
+      }),
+      payload.create({
+        collection: pagesSlug,
+        data: { title: 'Page one', _status: 'published' },
+        overrideAccess: true,
+      }),
+    ])
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({ collections: [postsSlug, pagesSlug] }),
+      headers: { Authorization: `JWT ${token}` },
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    const data = await endpointRes.json()
+
+    // 2 posts + 1 page = 3 total, all published, 0 drafts skipped, 0 errors
+    expect((data as { message: string }).message).toBe(
+      `Successfully reindexed 3 of 3 documents from ${postsSlug}, ${pagesSlug} and skipped 0 drafts.`,
+    )
+  })
+
+  test('should index locale-specific data for all locales when reindexing multiple collections', async ({
+    payload,
+    restClient,
+  }) => {
+    // Create a post with distinct slugs per locale — these are mapped into the search doc via beforeSync
+    const { id: postId } = await payload.create({
+      collection: postsSlug,
+      data: { title: 'Locale test post', _status: 'published', slug: 'post-slug-en' },
+      locale: 'en',
+      overrideAccess: true,
+    })
+
+    await payload.update({
+      collection: postsSlug,
+      id: postId,
+      data: { slug: 'post-slug-es' },
+      locale: 'es',
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: postsSlug,
+      id: postId,
+      data: { slug: 'post-slug-de' },
+      locale: 'de',
+      overrideAccess: true,
+    })
+
+    // Create a page so both collections are reindexed together, exercising the multi-collection path
+    await payload.create({
+      collection: pagesSlug,
+      data: { title: 'Locale test page', _status: 'published' },
+      overrideAccess: true,
+    })
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({ collections: [postsSlug, pagesSlug] }),
+      headers: { Authorization: `JWT ${token}` },
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    const { docs: searchDocs } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        and: [{ 'doc.relationTo': { equals: postsSlug } }, { 'doc.value': { equals: postId } }],
+      },
+      overrideAccess: true,
+    })
+
+    expect(searchDocs).toHaveLength(1)
+
+    const searchDocId = searchDocs[0]!.id
+
+    const [enDoc, esDoc, deDoc] = await Promise.all([
+      payload.findByID({
+        collection: 'search',
+        id: searchDocId,
+        locale: 'en',
+        overrideAccess: true,
+      }),
+      payload.findByID({
+        collection: 'search',
+        id: searchDocId,
+        locale: 'es',
+        overrideAccess: true,
+      }),
+      payload.findByID({
+        collection: 'search',
+        id: searchDocId,
+        locale: 'de',
+        overrideAccess: true,
+      }),
+    ])
+
+    // With localization fallback: true, a missing locale update would silently fall back to 'en'
+    // making these assertions fail — catching any regression to concurrent reindexing
+    expect(enDoc.slug).toBe('post-slug-en')
+    expect(esDoc.slug).toBe('post-slug-es')
+    expect(deDoc.slug).toBe('post-slug-de')
+  })
+
+  test('should exclude drafts from reindexing by default', async ({ payload, restClient }) => {
+    await Promise.all([
+      payload.create({
+        collection: pagesSlug,
+        data: {
+          title: 'Test page published',
+          _status: 'published',
+        },
+        overrideAccess: true,
+      }),
+      payload.create({
+        collection: pagesSlug,
+        data: {
+          title: 'Test page draft',
+          _status: 'draft',
+        },
+        overrideAccess: true,
+      }),
+    ])
+
+    await wait(200)
+
+    const { totalDocs: totalBeforeReindex } = await payload.count({
+      collection: 'search',
+      overrideAccess: true,
+    })
+
+    expect(totalBeforeReindex).toBe(1)
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: [pagesSlug],
+      }),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    const { totalDocs: totalAfterReindex } = await payload.count({
+      collection: 'search',
+      overrideAccess: true,
+    })
+
+    expect(totalAfterReindex).toBe(totalBeforeReindex)
+
+    const data = await endpointRes.json()
+
+    const totalDocs = 2
+    const nonDrafts = 1
+    expect(data.message).toBe(
+      `Successfully reindexed ${nonDrafts} of ${totalDocs} documents from ${pagesSlug} and skipped ${totalDocs - nonDrafts} drafts.`,
+    )
+  })
+
+  test('should reindex all configured locales', async ({ payload, restClient }) => {
+    const post = await payload.create({
+      collection: postsSlug,
+      locale: 'en',
+      data: {
+        title: 'Test page published',
+        _status: 'published',
+        slug: 'test-en',
+      },
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: postsSlug,
+      id: post.id,
+      locale: 'es',
+      data: {
+        _status: 'published',
+        slug: 'test-es',
+      },
+      overrideAccess: true,
+    })
+    await payload.update({
+      collection: postsSlug,
+      id: post.id,
+      locale: 'de',
+      data: {
+        _status: 'published',
+        slug: 'test-de',
+      },
+      overrideAccess: true,
+    })
+
+    const {
+      docs: [postBeforeReindex],
+    } = await payload.find({
+      collection: 'search',
+      locale: 'all',
+      where: {
+        doc: {
+          equals: {
+            value: post.id,
+            relationTo: postsSlug,
+          },
+        },
+      },
+      pagination: false,
+      limit: 1,
+      depth: 0,
+      overrideAccess: true,
+    })
+
+    expect(postBeforeReindex?.slug).not.toBeFalsy()
+
+    const endpointRes = await restClient.POST(`/search/reindex`, {
+      body: JSON.stringify({
+        collections: [postsSlug],
+      }),
+      headers: {
+        Authorization: `JWT ${token}`,
+      },
+    })
+
+    expect(endpointRes.status).toBe(200)
+
+    const {
+      docs: [postAfterReindex],
+    } = await payload.find({
+      collection: 'search',
+      locale: 'all',
+      where: {
+        doc: {
+          equals: {
+            value: post.id,
+            relationTo: postsSlug,
+          },
+        },
+      },
+      pagination: false,
+      limit: 1,
+      depth: 0,
+      overrideAccess: true,
+    })
+
+    expect(postAfterReindex?.slug).not.toBeFalsy()
+    expect(postAfterReindex?.slug).toStrictEqual(postBeforeReindex?.slug)
+  })
+
+  test('should sync trashed documents correctly with search plugin', async ({ payload }) => {
+    // Create a published post
+    const publishedPost = await payload.create({
+      collection: postsSlug,
+      data: {
+        title: 'Post to be trashed',
+        excerpt: 'This post will be soft deleted',
+        _status: 'published',
+      },
+      overrideAccess: true,
+    })
+
+    // Wait for the search document to be created
+    await wait(200)
+
+    // Verify the search document was created
+    const { docs: initialSearchResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: publishedPost.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(initialSearchResults).toHaveLength(1)
+    expect(initialSearchResults[0]?.title).toBe('Post to be trashed')
+
+    // Soft delete the post (move to trash)
+    await payload.update({
+      collection: postsSlug,
+      id: publishedPost.id,
+      data: {
+        deletedAt: new Date().toISOString(),
+      },
+      overrideAccess: true,
+    })
+
+    // Wait for the search plugin to sync the trashed document
+    await wait(200)
+
+    // Verify the search document still exists but is properly synced
+    // The search document should remain and be updated correctly
+    const { docs: trashedSearchResults } = await payload.find({
+      collection: 'search',
+      depth: 0,
+      where: {
+        'doc.value': {
+          equals: publishedPost.id,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    // The search document should still exist
+    expect(trashedSearchResults).toHaveLength(0)
+
+    // Clean up by permanently deleting the trashed post
+    await payload.delete({
+      collection: postsSlug,
+      id: publishedPost.id,
+      trash: true, // permanently delete
+      overrideAccess: true,
+    })
+  })
+
+  test.describe('locale filtering', () => {
+    test('should filter locales when skipSync excludes them', async ({ payload }) => {
+      // Test config has 3 locales: ['en', 'es', 'de']
+      // For 'filtered-locales' collection with syncEnglishOnly: true, only 'en' should be indexed
+
+      // Create a doc with syncEnglishOnly enabled
+      const enDoc = await payload.create({
+        collection: 'filtered-locales',
+        data: {
+          title: 'Filtered Doc',
+          syncEnglishOnly: true,
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+
+      // Query for ALL search docs with locale: 'all' to see total count
+      const { docs: allSearchDocs } = await payload.find({
+        collection: 'search',
+        locale: 'all',
+        where: {
+          'doc.value': {
+            equals: enDoc.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      // Should only have 1 search doc total (English only)
+      expect(allSearchDocs).toHaveLength(1)
+      expect(allSearchDocs[0]?.doc.relationTo).toBe('filtered-locales')
+
+      // Verify the search doc exists for English locale
+      const { docs } = await payload.find({
+        collection: 'search',
+        locale: 'all',
+        where: {
+          'doc.value': {
+            equals: enDoc.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(docs).toHaveLength(1)
+
+      const doc = docs[0]
+      expect(doc).toBeDefined()
+      expect(doc.doc.relationTo).toBe('filtered-locales')
+      expect(doc.title).toHaveProperty('en', 'Filtered Doc')
+      expect(doc.title).not.toHaveProperty('es')
+      expect(doc.title).not.toHaveProperty('de')
+
+      // Clean up
+      await payload.delete({
+        collection: 'filtered-locales',
+        id: enDoc.id,
+        overrideAccess: true,
+      })
+    })
+
+    test('should index all locales when skipSync allows all locales', async ({ payload }) => {
+      // Test config has 3 locales: ['en', 'es', 'de']
+      // For 'posts' collection, skipSync returns false for all locales
+
+      // Create a post
+      const post = await payload.create({
+        collection: postsSlug,
+        data: {
+          _status: 'published',
+          title: 'Test Post for All Locales',
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+
+      // Update the post in Spanish locale
+      await payload.update({
+        collection: postsSlug,
+        id: post.id,
+        locale: 'es',
+        data: {
+          _status: 'published',
+          title: 'Test Post para Todos los Locales',
+        },
+        overrideAccess: true,
+      })
+
+      // Update the post in German locale
+      await payload.update({
+        collection: postsSlug,
+        id: post.id,
+        locale: 'de',
+        data: {
+          _status: 'published',
+          title: 'Testbeitrag für alle Sprachen',
+        },
+        overrideAccess: true,
+      })
+
+      // Query for search doc with locale: 'all'
+      const { docs: allSearchDocs } = await payload.find({
+        collection: 'search',
+        locale: 'all',
+        where: {
+          'doc.value': {
+            equals: post.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      // Should have 1 search doc with all locales embedded
+      expect(allSearchDocs).toHaveLength(1)
+      expect(allSearchDocs[0]?.doc.relationTo).toBe(postsSlug)
+      // Verify all locales are present in the localized title field
+      expect(allSearchDocs[0]?.title).toHaveProperty('en', 'Test Post for All Locales')
+      expect(allSearchDocs[0]?.title).toHaveProperty('es', 'Test Post para Todos los Locales')
+      expect(allSearchDocs[0]?.title).toHaveProperty('de', 'Testbeitrag für alle Sprachen')
+
+      // Clean up
+      await payload.delete({
+        collection: postsSlug,
+        id: post.id,
+        overrideAccess: true,
+      })
+    })
+
+    test('should index all locales when syncEnglishOnly is false', async ({ payload }) => {
+      // For 'filtered-locales' collection with syncEnglishOnly: false, all locales should be indexed
+
+      // Create a doc with syncEnglishOnly disabled
+      const doc = await payload.create({
+        collection: 'filtered-locales',
+        data: {
+          title: 'Unfiltered Doc',
+          syncEnglishOnly: false,
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+
+      // Verify search doc exists for English
+      const { docs: enSearchDocs } = await payload.find({
+        collection: 'search',
+        locale: 'en',
+        where: {
+          'doc.value': {
+            equals: doc.id,
+          },
+        },
+        overrideAccess: true,
+      })
+      expect(enSearchDocs).toHaveLength(1)
+
+      // Verify search doc exists for Spanish
+      const { docs: esSearchDocs } = await payload.find({
+        collection: 'search',
+        locale: 'es',
+        where: {
+          'doc.value': {
+            equals: doc.id,
+          },
+        },
+        overrideAccess: true,
+      })
+      expect(esSearchDocs).toHaveLength(1)
+
+      // Verify search doc exists for German
+      const { docs: deSearchDocs } = await payload.find({
+        collection: 'search',
+        locale: 'de',
+        where: {
+          'doc.value': {
+            equals: doc.id,
+          },
+        },
+        overrideAccess: true,
+      })
+      expect(deSearchDocs).toHaveLength(1)
+
+      // Clean up
+      await payload.delete({
+        collection: 'filtered-locales',
+        id: doc.id,
+        overrideAccess: true,
+      })
+    })
+  })
+})

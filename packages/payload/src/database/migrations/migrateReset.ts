@@ -1,0 +1,77 @@
+import type { BaseDatabaseAdapter, MigrationResult } from '../types.js'
+
+import { commitTransaction } from '../../utilities/commitTransaction.js'
+import { createPayloadRequest } from '../../utilities/createPayloadRequest.js'
+import { initTransaction } from '../../utilities/initTransaction.js'
+import { killTransaction } from '../../utilities/killTransaction.js'
+import { getMigrations } from './getMigrations.js'
+import { readMigrationFiles } from './readMigrationFiles.js'
+
+export async function migrateReset(this: BaseDatabaseAdapter): Promise<MigrationResult> {
+  const { payload } = this
+  const migrationFiles = await readMigrationFiles({ payload })
+
+  const { existingMigrations } = await getMigrations({ payload })
+
+  if (!existingMigrations?.length) {
+    payload.logger.info({ msg: 'No migrations to reset.' })
+    return { migrated: [], rolledBack: [] }
+  }
+
+  const req = await createPayloadRequest({ payload })
+
+  migrationFiles.reverse()
+  const rolledBack: string[] = []
+
+  // Rollback all migrations in order
+  for (const migration of migrationFiles) {
+    // Create or update migration in database
+    const existingMigration = existingMigrations.find(
+      (existing) => existing.name === migration.name,
+    )
+    if (existingMigration) {
+      payload.logger.info({ msg: `Migrating down: ${migration.name}` })
+      try {
+        const start = Date.now()
+        await initTransaction(req)
+        const session = payload.db.sessions?.[await req.transactionID!]
+        await migration.down({ payload, req, session })
+        await payload.delete({
+          collection: 'payload-migrations',
+          overrideAccess: true,
+          req,
+          where: {
+            id: {
+              equals: existingMigration.id,
+            },
+          },
+        })
+        await commitTransaction(req)
+        rolledBack.push(migration.name)
+        payload.logger.info({ msg: `Migrated down:  ${migration.name} (${Date.now() - start}ms)` })
+      } catch (err: unknown) {
+        await killTransaction(req)
+        payload.logger.error({ err, msg: `Error running migration ${migration.name}` })
+        throw err
+      }
+    }
+  }
+
+  // Delete dev migration
+  try {
+    await payload.delete({
+      collection: 'payload-migrations',
+      overrideAccess: true,
+      where: {
+        batch: {
+          equals: -1,
+        },
+      },
+    })
+  } catch (err: unknown) {
+    payload.logger.error({ err, msg: 'Error deleting dev migration' })
+    throw err
+  }
+
+  return { migrated: [], rolledBack }
+}

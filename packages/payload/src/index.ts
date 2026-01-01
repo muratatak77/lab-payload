@@ -1,0 +1,2192 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { ExecutionResult, GraphQLSchema, ValidationRule } from 'graphql'
+import type { Request as graphQLRequest, OperationArgs } from 'graphql-http'
+import type { Logger } from 'pino'
+import type { NonNever } from 'ts-essentials'
+
+import { spawn } from 'child_process'
+import { fileURLToPath } from 'node:url'
+import path from 'path'
+
+import type { DevReloadStrategy } from './admin/adapters/devReload.js'
+import type { AuthArgs } from './auth/operations/auth.js'
+import type { Result as ForgotPasswordResult } from './auth/operations/forgotPassword.js'
+import type { LoginResult } from './auth/operations/login.js'
+import type { Result as ResetPasswordResult } from './auth/operations/resetPassword.js'
+import type { AuthStrategy, UserSession } from './auth/types.js'
+import type {
+  BulkOperationResult,
+  Collection,
+  DataFromCollectionSlug,
+  SelectFromCollectionSlug,
+  TypeWithID,
+} from './collections/config/types.js'
+
+import { getRegisteredDevReloadStrategy } from './admin/adapters/devReload.js'
+import {
+  forgotPasswordLocal,
+  type Options as ForgotPasswordOptions,
+} from './auth/operations/local/forgotPassword.js'
+import { loginLocal, type Options as LoginOptions } from './auth/operations/local/login.js'
+import {
+  resetPasswordLocal,
+  type Options as ResetPasswordOptions,
+} from './auth/operations/local/resetPassword.js'
+import { unlockLocal, type Options as UnlockOptions } from './auth/operations/local/unlock.js'
+import {
+  verifyEmailLocal,
+  type Options as VerifyEmailOptions,
+} from './auth/operations/local/verifyEmail.js'
+export {
+  getRegisteredDevReloadStrategy,
+  registerDevReloadStrategy,
+} from './admin/adapters/devReload.js'
+import type { InitOptions, SanitizedConfig } from './config/types.js'
+import type { BaseDatabaseAdapter, PaginatedDistinctDocs, PaginatedDocs } from './database/types.js'
+import type { InitializedEmailAdapter } from './email/types.js'
+import type { DataFromGlobalSlug, Globals, SelectFromGlobalSlug } from './globals/config/types.js'
+import type {
+  ApplyDisableErrors,
+  DraftTransformCollectionWithSelect,
+  JsonObject,
+  SelectType,
+  TransformCollectionWithSelect,
+  TransformGlobalWithSelect,
+} from './types/index.js'
+import type { ValidationResult } from './types/validation.js'
+import type { TraverseFieldsCallback } from './utilities/traverseFields.js'
+
+import { countLocal, type CountOptions } from './collections/operations/local/count.js'
+import {
+  createLocal,
+  type Options as CreateOptions,
+} from './collections/operations/local/create.js'
+import {
+  type ByIDOptions as DeleteByIDOptions,
+  deleteLocal,
+  type ManyOptions as DeleteManyOptions,
+  type Options as DeleteOptions,
+} from './collections/operations/local/delete.js'
+import {
+  duplicateLocal,
+  type Options as DuplicateOptions,
+} from './collections/operations/local/duplicate.js'
+import { findLocal, type FindOptions } from './collections/operations/local/find.js'
+export type { FindOptions }
+import {
+  findByIDLocal,
+  type Options as FindByIDOptions,
+} from './collections/operations/local/findByID.js'
+import {
+  findDistinct as findDistinctLocal,
+  type Options as FindDistinctOptions,
+} from './collections/operations/local/findDistinct.js'
+import {
+  findVersionByIDLocal,
+  type Options as FindVersionByIDOptions,
+} from './collections/operations/local/findVersionByID.js'
+import {
+  findVersionsLocal,
+  type Options as FindVersionsOptions,
+} from './collections/operations/local/findVersions.js'
+import {
+  renameFileLocal,
+  type RenameFileOptions,
+} from './collections/operations/local/renameFile.js'
+import {
+  restoreVersionLocal,
+  type Options as RestoreVersionOptions,
+} from './collections/operations/local/restoreVersion.js'
+import {
+  type ByIDOptions as UpdateByIDOptions,
+  updateLocal,
+  type ManyOptions as UpdateManyOptions,
+  type Options as UpdateOptions,
+} from './collections/operations/local/update.js'
+import {
+  type ValidateCollectionOptions,
+  validateLocal,
+} from './collections/operations/local/validate.js'
+import {
+  countGlobalVersionsLocal,
+  type CountGlobalVersionsOptions,
+} from './globals/operations/local/countVersions.js'
+import {
+  type Options as FindGlobalOptions,
+  findOneGlobalLocal,
+} from './globals/operations/local/findOne.js'
+import {
+  findGlobalVersionByIDLocal,
+  type Options as FindGlobalVersionByIDOptions,
+} from './globals/operations/local/findVersionByID.js'
+import {
+  findGlobalVersionsLocal,
+  type Options as FindGlobalVersionsOptions,
+} from './globals/operations/local/findVersions.js'
+import {
+  restoreGlobalVersionLocal,
+  type Options as RestoreGlobalVersionOptions,
+} from './globals/operations/local/restoreVersion.js'
+import {
+  updateGlobalLocal,
+  type Options as UpdateGlobalOptions,
+} from './globals/operations/local/update.js'
+import {
+  validateGlobalLocal,
+  type ValidateGlobalOptions,
+} from './globals/operations/local/validate.js'
+export type * from './admin/adapters/index.js'
+export type { FieldState } from './admin/forms/Form.js'
+export type * from './admin/types.js'
+export { EntityType } from './admin/views/dashboard.js'
+import type { SupportedLanguages } from '@payloadcms/translations'
+
+import { Cron } from 'croner'
+
+import type { EncryptionKeyring } from './auth/crypto.js'
+import type { ClientConfig } from './config/client.js'
+import type { KVAdapter } from './kv/index.js'
+import type { JobLog, JobTaskStatus } from './queues/config/types/workflowTypes.js'
+import type { TypeWithVersion } from './versions/types.js'
+
+import { buildEncryptionKeyring, decrypt, encrypt, reencrypt } from './auth/crypto.js'
+import { authLocal } from './auth/operations/local/auth.js'
+import { APIKeyAuthentication } from './auth/strategies/apiKey.js'
+import { JWTAuthentication } from './auth/strategies/jwt.js'
+import { checkPayloadDependencies } from './checkPayloadDependencies.js'
+import {
+  generateImportMap,
+  type ImportMap,
+} from './cli/commands/generateImportMap/generateImportMap.js'
+import {
+  countVersionsLocal,
+  type CountVersionsOptions,
+} from './collections/operations/local/countVersions.js'
+import { consoleEmailAdapter } from './email/consoleEmailAdapter.js'
+import { fieldAffectsData, type FlattenedBlock } from './fields/config/types.js'
+import { getJobsLocalAPI } from './queues/localAPI.js'
+import { _internal_jobSystemGlobals } from './queues/utilities/getCurrentDate.js'
+import { formatAdminURL } from './utilities/formatAdminURL.js'
+import { isNextBuild } from './utilities/isNextBuild.js'
+import { getLogger } from './utilities/logger.js'
+import { defaultNextJsDevReloadStrategy } from './utilities/nextJsDevReloadStrategy.js'
+import { serverInit as serverInitTelemetry } from './utilities/telemetry/events/serverInit.js'
+import { traverseFields } from './utilities/traverseFields.js'
+
+/**
+ * Export of all base fields that could potentially be
+ * useful as users wish to extend built-in fields with custom logic
+ */
+export { accountLockFields as baseAccountLockFields } from './auth/baseFields/accountLock.js'
+export { createAPIKeyFields } from './auth/baseFields/apiKey.js'
+export { baseAuthFields } from './auth/baseFields/auth.js'
+export { emailFieldConfig as baseEmailField } from './auth/baseFields/email.js'
+export { sessionsFieldConfig as baseSessionsField } from './auth/baseFields/sessions.js'
+export { usernameFieldConfig as baseUsernameField } from './auth/baseFields/username.js'
+export { verificationFields as baseVerificationFields } from './auth/baseFields/verification.js'
+
+export { createAuthToken } from './auth/createAuthToken.js'
+export { defaultUserCollection } from './auth/defaultUser.js'
+export { executeAccess } from './auth/executeAccess.js'
+export { executeAuthStrategies } from './auth/executeAuthStrategies.js'
+export { extractAccessFromPermission } from './auth/extractAccessFromPermission.js'
+export { getAccessResults } from './auth/getAccessResults.js'
+export { getFieldsToSign } from './auth/getFieldsToSign.js'
+export { getLoginOptions } from './auth/getLoginOptions.js'
+
+/**
+ * Shape constraint for PayloadTypes.
+ * Matches the structure of generated Config types.
+ *
+ * By defining the actual shape, we can use simple property access (T['collections'])
+ * instead of conditional types throughout the codebase.
+ */
+export interface PayloadTypesShape {
+  auth: Record<string, unknown>
+  blocks: Record<string, unknown>
+  collections: Record<string, unknown>
+  collectionsJoins: Record<string, unknown>
+  collectionsSelect: Record<string, unknown>
+  db: { defaultIDType: unknown }
+  fallbackLocale: unknown
+  globals: Record<string, unknown>
+  globalsSelect: Record<string, unknown>
+  jobs: unknown
+  locale: unknown
+  user: unknown
+  widgets?: Record<string, unknown>
+}
+
+/**
+ * Untyped fallback types. Uses the SAME property names as generated types.
+ * PayloadTypes merges GeneratedTypes with these fallbacks.
+ */
+export interface UntypedPayloadTypes {
+  auth: {
+    [slug: string]: {
+      forgotPassword: {
+        email: string
+      }
+      login: {
+        email: string
+        password: string
+      }
+      registerFirstUser: {
+        email: string
+        password: string
+      }
+      unlock: {
+        email: string
+      }
+    }
+  }
+  blocks: {
+    [slug: string]: JsonObject
+  }
+  collections: {
+    [slug: string]: JsonObject & TypeWithID
+    'payload-jobs': {
+      completedAt?: null | string
+      /**
+       * Used for concurrency control. Jobs with the same key are subject to exclusive/supersedes rules.
+       */
+      concurrencyKey?: null | string
+      createdAt: string
+      error?: unknown
+      hasError?: boolean
+      id: UntypedPayloadTypes['db']['defaultIDType']
+      input: object
+      log?: JobLog[]
+      meta?: {
+        [key: string]: unknown
+        /**
+         * If true, this job was queued by the scheduling system.
+         */
+        scheduled?: boolean
+      }
+      processingToken?: null | string
+      processingUntil?: null | string
+      queue?: string
+      taskSlug?: null | StringKeyOf<UntypedPayloadTypes['jobs']['tasks']>
+      taskStatus: JobTaskStatus
+      totalTried: number
+      updatedAt: string
+      waitUntil?: null | string
+      workflowSlug?: null | StringKeyOf<UntypedPayloadTypes['jobs']['workflows']>
+    }
+  }
+  collectionsJoins: {
+    [slug: string]: {
+      [schemaPath: string]: string
+    }
+  }
+  collectionsSelect: {
+    [slug: string]: SelectType
+  }
+  db: {
+    defaultIDType: number | string
+  }
+  fallbackLocale: 'false' | 'none' | 'null' | ({} & string)[] | ({} & string) | false | null
+  globals: {
+    [slug: string]: JsonObject
+  }
+  globalsSelect: {
+    [slug: string]: SelectType
+  }
+  jobs: {
+    tasks: {
+      [slug: string]: {
+        input?: JsonObject
+        output?: JsonObject
+      }
+    }
+    workflows: {
+      [slug: string]: {
+        input: JsonObject
+      }
+    }
+  }
+  locale: null | string
+  /**
+   * User shape used when generated types are unavailable.
+   * Includes common document fields and fields managed by Payload auth. Custom fields and
+   * collection features such as drafts, trash, and uploads require generated types. Runtime fields
+   * `_strategy` and `_sid` belong to `AuthenticatedUser`.
+   */
+  user: {
+    /** Email verification token. Hidden (needs `showHiddenFields`). Only with `auth.verify`, until verified. */
+    _verificationToken?: null | string
+    /** Whether the email is verified. Only with `auth.verify`. */
+    _verified?: boolean | null
+    /** The user's API key. Write-only: accepted on `create`/`update`, never returned on reads. */
+    apiKey?: null | string
+    /** Internal lookup index for the API key. Never returned on reads. */
+    apiKeyIndex?: null | string
+    /** The API key's final four characters. Only with `auth.useAPIKey`. */
+    apiKeyLast4?: null | string
+    /** Slug of the auth collection this user belongs to. Always present; identifies the source collection. */
+    collection: string
+    /** When the user was created. Not present when timestamps are disabled. */
+    createdAt?: string
+    /** The user's email. Absent if email login is disabled via `auth.loginWithUsername`. */
+    email?: null | string
+    /** Hashed password. Hidden (needs `showHiddenFields`). Only with the local strategy. */
+    hash?: null | string
+    /** The user's ID. Always present. */
+    id: UntypedPayloadTypes['db']['defaultIDType']
+    /** Locked-until timestamp. Hidden (needs `showHiddenFields`). Only with `auth.maxLoginAttempts`, while locked. */
+    lockUntil?: null | string
+    /** Failed login attempt count. Hidden (needs `showHiddenFields`). Only with `auth.maxLoginAttempts`. */
+    loginAttempts?: null | number
+    /** Plain-text password. Write-only: accepted on `create`/`update`, never returned on reads. */
+    password?: null | string
+    /** Reset-token expiry. Hidden (needs `showHiddenFields`). Only after `forgotPassword`, until reset. */
+    resetPasswordExpiration?: null | string
+    /** Last password-reset email time. Hidden (needs `showHiddenFields`). */
+    resetPasswordRequestedAt?: null | string
+    /** Active password-reset token. Hidden (needs `showHiddenFields`). Only after `forgotPassword`, until reset. */
+    resetPasswordToken?: null | string
+    /** Password salt. Hidden (needs `showHiddenFields`). Only with the local strategy. */
+    salt?: null | string
+    /** Active login sessions. Only with `auth.useSessions` (the default). */
+    sessions?: Array<UserSession> | null
+    /** When the user was last updated. Not present when timestamps are disabled. */
+    updatedAt?: string
+    /** The user's username. Only with `auth.loginWithUsername`. */
+    username?: null | string
+  }
+  widgets: {
+    [slug: string]: JsonObject
+  }
+}
+
+/**
+ * Interface to be module-augmented by the `payload-types.ts` file.
+ * When augmented, its properties take precedence over UntypedPayloadTypes.
+ */
+export interface GeneratedTypes {}
+
+/**
+ * Interface to be module-augmented by plugin packages.
+ * Maps plugin slug to plugin options type, enabling typed cross-plugin
+ * discovery via the `plugins` map passed to `definePlugin` functions.
+ *
+ * @experimental
+ *
+ * @example
+ * // In a plugin package's index.ts:
+ * declare module 'payload' {
+ *   interface RegisteredPlugins {
+ *     'plugin-seo': SEOPluginOptions
+ *   }
+ * }
+ */
+export interface RegisteredPlugins {}
+
+/**
+ * Check if GeneratedTypes has been augmented (has any keys).
+ */
+type IsAugmented = keyof GeneratedTypes extends never ? false : true
+
+/**
+ * PayloadTypes merges GeneratedTypes with UntypedPayloadTypes.
+ * - When augmented: uses augmented properties, fills gaps with untyped fallbacks
+ * - When not augmented: uses only UntypedPayloadTypes
+ */
+export type PayloadTypes = IsAugmented extends true
+  ? GeneratedTypes & Omit<UntypedPayloadTypes, keyof GeneratedTypes>
+  : UntypedPayloadTypes
+
+export type TypedCollection<T extends PayloadTypesShape = PayloadTypes> = T['collections']
+
+export type TypedBlock = PayloadTypes['blocks']
+
+export type TypedWidget<T extends PayloadTypesShape = PayloadTypes> = T extends {
+  widgets: infer TWidgets
+}
+  ? TWidgets extends Record<string, unknown>
+    ? TWidgets
+    : Record<string, unknown>
+  : Record<string, unknown>
+
+export type TypedUploadCollection<T extends PayloadTypesShape = PayloadTypes> = NonNever<{
+  [TSlug in keyof T['collections']]:
+    | 'filename'
+    | 'filesize'
+    | 'mimeType'
+    | 'url' extends keyof T['collections'][TSlug]
+    ? T['collections'][TSlug]
+    : never
+}>
+
+export type TypedCollectionSelect<T extends PayloadTypesShape = PayloadTypes> =
+  T['collectionsSelect']
+
+export type TypedCollectionJoins<T extends PayloadTypesShape = PayloadTypes> = T['collectionsJoins']
+
+export type TypedGlobal<T extends PayloadTypesShape = PayloadTypes> = T['globals']
+
+export type TypedGlobalSelect<T extends PayloadTypesShape = PayloadTypes> = T['globalsSelect']
+
+// Extract string keys from the type
+export type StringKeyOf<T> = Extract<keyof T, string>
+
+// Define the types for slugs using the appropriate collections and globals
+export type CollectionSlug<T extends PayloadTypesShape = PayloadTypes> = StringKeyOf<
+  T['collections']
+>
+
+export type BlockSlug = StringKeyOf<TypedBlock>
+
+export type WidgetSlug<T extends PayloadTypesShape = PayloadTypes> = StringKeyOf<TypedWidget<T>>
+
+export type DataFromWidgetSlug<TSlug extends WidgetSlug> = TypedWidget[TSlug] extends {
+  data?: infer TData
+}
+  ? TData
+  : TypedWidget[TSlug]
+
+export type UploadCollectionSlug<T extends PayloadTypesShape = PayloadTypes> = StringKeyOf<
+  TypedUploadCollection<T>
+>
+
+export type DefaultDocumentIDType = PayloadTypes['db']['defaultIDType']
+
+export type GlobalSlug<T extends PayloadTypesShape = PayloadTypes> = StringKeyOf<T['globals']>
+
+export type TypedLocale<T extends PayloadTypesShape = PayloadTypes> = T['locale']
+
+export type TypedFallbackLocale = PayloadTypes['fallbackLocale']
+
+/**
+ * User document type for auth-enabled collections.
+ * Uses generated types when available and the auth-only fallback above otherwise. Generated types
+ * include custom fields and can be a union when several collections support auth.
+ *
+ * Not the signed-in `req.user`, which also has `_strategy` and `_sid` - use `AuthenticatedUser`.
+ */
+export type User = PayloadTypes['user']
+
+export type TypedAuthOperations<T extends PayloadTypesShape = PayloadTypes> = T['auth']
+
+export type AuthCollectionSlug<T extends PayloadTypesShape = PayloadTypes> = StringKeyOf<T['auth']>
+
+export type TypedJobs = PayloadTypes['jobs']
+
+type JobDocument = PayloadTypes['collections'] extends {
+  'payload-jobs': infer TJob
+}
+  ? TJob
+  : UntypedPayloadTypes['collections']['payload-jobs']
+
+/**
+ * Represents a job in the `payload-jobs` collection, referencing a queued workflow or task (= Job).
+ * Uses the generated collection type when available and the untyped collection fallback otherwise.
+ *
+ * `input` and `taskStatus` are always present here, as the job afterRead hook will always populate them.
+ */
+export type Job<TWorkflowSlugOrInput extends keyof TypedJobs['workflows'] | object = object> = {
+  input: TWorkflowSlugOrInput extends keyof TypedJobs['workflows']
+    ? TypedJobs['workflows'][TWorkflowSlugOrInput]['input']
+    : TWorkflowSlugOrInput
+  taskStatus: JobTaskStatus
+} & Omit<JobDocument, 'input' | 'taskStatus'>
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+let checkedDependencies = false
+
+/**
+ * @description Payload
+ */
+export class BasePayload {
+  /**
+   * @description Authorization and Authentication using headers and cookies to run auth user strategies
+   * @returns permissions: Permissions
+   * @returns user: User
+   */
+  auth = async (options: AuthArgs) => {
+    return authLocal(this, options)
+  }
+
+  authStrategies!: AuthStrategy[]
+
+  blocks: Record<BlockSlug, FlattenedBlock> = {}
+
+  collections: Record<CollectionSlug, Collection> = {}
+
+  config!: SanitizedConfig
+  /**
+   * @description Performs count operation
+   * @param options
+   * @returns count of documents satisfying query
+   */
+  count = async <T extends CollectionSlug>(
+    options: CountOptions<T>,
+  ): Promise<{ totalDocs: number }> => {
+    return countLocal(this, options)
+  }
+
+  /**
+   * @description Performs countGlobalVersions operation
+   * @param options
+   * @returns count of global document versions satisfying query
+   */
+  countGlobalVersions = async <T extends GlobalSlug>(
+    options: CountGlobalVersionsOptions<T>,
+  ): Promise<{ totalDocs: number }> => {
+    return countGlobalVersionsLocal(this, options)
+  }
+
+  /**
+   * @description Performs countVersions operation
+   * @param options
+   * @returns count of document versions satisfying query
+   */
+  countVersions = async <T extends CollectionSlug>(
+    options: CountVersionsOptions<T>,
+  ): Promise<{ totalDocs: number }> => {
+    return countVersionsLocal(this, options)
+  }
+
+  /**
+   * @description Performs create operation
+   * @param options
+   * @returns created document
+   */
+  create = async <TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: CreateOptions<TSlug, TSelect>,
+  ): Promise<TransformCollectionWithSelect<TSlug, TSelect>> => {
+    return createLocal<TSlug, TSelect>(this, options)
+  }
+
+  crons: Cron[] = []
+  db!: DatabaseAdapter
+
+  decrypt = decrypt
+
+  destroy = async () => {
+    if (this.crons.length) {
+      // Remove all crons from the list before stopping them
+      const cronsToStop = this.crons.splice(0, this.crons.length)
+      await Promise.all(cronsToStop.map((cron) => cron.stop()))
+    }
+
+    if (this.db?.destroy && typeof this.db.destroy === 'function') {
+      await this.db.destroy()
+    }
+  }
+
+  duplicate = async <TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: DuplicateOptions<TSlug, TSelect>,
+  ): Promise<TransformCollectionWithSelect<TSlug, TSelect>> => {
+    return duplicateLocal<TSlug, TSelect>(this, options)
+  }
+
+  email!: InitializedEmailAdapter
+
+  // TODO: re-implement or remove?
+  // errorHandler: ErrorHandler
+
+  encrypt = encrypt
+
+  encryptionKeyring!: EncryptionKeyring
+
+  extensions!: (args: {
+    args: OperationArgs<any>
+    req: graphQLRequest<unknown, unknown>
+    result: ExecutionResult
+  }) => Promise<any>
+
+  /**
+   * @description Find documents with criteria
+   * @param options
+   * @returns documents satisfying query
+   */
+  find = async <
+    TSlug extends CollectionSlug,
+    TSelect extends SelectFromCollectionSlug<TSlug>,
+    TDraft extends boolean = false,
+  >(
+    options: { draft?: TDraft } & FindOptions<TSlug, TSelect>,
+  ): Promise<
+    PaginatedDocs<
+      TDraft extends true
+        ? PayloadTypes extends { strictDraftTypes: true }
+          ? DraftTransformCollectionWithSelect<TSlug, TSelect>
+          : TransformCollectionWithSelect<TSlug, TSelect>
+        : TransformCollectionWithSelect<TSlug, TSelect>
+    >
+  > => {
+    return findLocal<TSlug, TSelect, TDraft>(this, options)
+  }
+
+  /**
+   * @description Find document by ID
+   * @param options
+   * @returns document with specified ID
+   */
+  findByID = async <
+    TSlug extends CollectionSlug,
+    TDisableErrors extends boolean,
+    TSelect extends SelectFromCollectionSlug<TSlug>,
+  >(
+    options: FindByIDOptions<TSlug, TDisableErrors, TSelect>,
+  ): Promise<ApplyDisableErrors<TransformCollectionWithSelect<TSlug, TSelect>, TDisableErrors>> => {
+    return findByIDLocal<TSlug, TDisableErrors, TSelect>(this, options)
+  }
+
+  /**
+   * @description Find distinct field values
+   * @param options
+   * @returns result with distinct field values
+   */
+  findDistinct = async <
+    TSlug extends CollectionSlug,
+    TField extends keyof DataFromCollectionSlug<TSlug> & string,
+  >(
+    options: FindDistinctOptions<TSlug, TField>,
+  ): Promise<PaginatedDistinctDocs<Record<TField, DataFromCollectionSlug<TSlug>[TField]>>> => {
+    return findDistinctLocal(this, options)
+  }
+
+  findGlobal = async <TSlug extends GlobalSlug, TSelect extends SelectFromGlobalSlug<TSlug>>(
+    options: FindGlobalOptions<TSlug, TSelect>,
+  ): Promise<TransformGlobalWithSelect<TSlug, TSelect>> => {
+    return findOneGlobalLocal<TSlug, TSelect>(this, options)
+  }
+
+  /**
+   * @description Find global version by ID
+   * @param options
+   * @returns global version with specified ID
+   */
+  findGlobalVersionByID = async <TSlug extends GlobalSlug>(
+    options: FindGlobalVersionByIDOptions<TSlug>,
+  ): Promise<TypeWithVersion<DataFromGlobalSlug<TSlug>>> => {
+    return findGlobalVersionByIDLocal<TSlug>(this, options)
+  }
+
+  /**
+   * @description Find global versions with criteria
+   * @param options
+   * @returns versions satisfying query
+   */
+  findGlobalVersions = async <TSlug extends GlobalSlug>(
+    options: FindGlobalVersionsOptions<TSlug>,
+  ): Promise<PaginatedDocs<TypeWithVersion<DataFromGlobalSlug<TSlug>>>> => {
+    return findGlobalVersionsLocal<TSlug>(this, options)
+  }
+
+  /**
+   * @description Find version by ID
+   * @param options
+   * @returns version with specified ID
+   */
+  findVersionByID = async <TSlug extends CollectionSlug>(
+    options: FindVersionByIDOptions<TSlug>,
+  ): Promise<TypeWithVersion<DataFromCollectionSlug<TSlug>>> => {
+    return findVersionByIDLocal<TSlug>(this, options)
+  }
+
+  /**
+   * @description Find versions with criteria
+   * @param options
+   * @returns versions satisfying query
+   */
+  findVersions = async <TSlug extends CollectionSlug>(
+    options: FindVersionsOptions<TSlug>,
+  ): Promise<PaginatedDocs<TypeWithVersion<DataFromCollectionSlug<TSlug>>>> => {
+    return findVersionsLocal<TSlug>(this, options)
+  }
+
+  forgotPassword = async <TSlug extends CollectionSlug>(
+    options: ForgotPasswordOptions<TSlug>,
+  ): Promise<ForgotPasswordResult> => {
+    return forgotPasswordLocal<TSlug>(this, options)
+  }
+
+  getAdminURL = (): string =>
+    formatAdminURL({
+      adminRoute: this.config.routes.admin,
+      path: '',
+      serverURL: this.config.serverURL,
+    })
+
+  getAPIURL = (): string =>
+    formatAdminURL({
+      apiRoute: this.config.routes.api,
+      path: '',
+      serverURL: this.config.serverURL,
+    })
+
+  globals!: Globals
+
+  importMap!: ImportMap
+
+  jobs = getJobsLocalAPI(this)
+
+  /**
+   * Key Value storage
+   */
+  kv!: KVAdapter
+
+  logger!: Logger
+
+  login = async <TSlug extends CollectionSlug>(
+    options: LoginOptions<TSlug>,
+  ): Promise<LoginResult<TSlug>> => {
+    return loginLocal<TSlug>(this, options)
+  }
+
+  reencrypt = reencrypt
+
+  /** Rename an upload's current managed files without changing their bytes. */
+  renameFile = async <TSlug extends CollectionSlug>(
+    options: RenameFileOptions<TSlug>,
+  ): Promise<DataFromCollectionSlug<TSlug>> => {
+    return renameFileLocal<TSlug>(this, options)
+  }
+
+  resetPassword = async <TSlug extends CollectionSlug>(
+    options: ResetPasswordOptions<TSlug>,
+  ): Promise<ResetPasswordResult> => {
+    return resetPasswordLocal<TSlug>(this, options)
+  }
+
+  /**
+   * @description Restore global version by ID
+   * @param options
+   * @returns version with specified ID
+   */
+  restoreGlobalVersion = async <TSlug extends GlobalSlug>(
+    options: RestoreGlobalVersionOptions<TSlug>,
+  ): Promise<DataFromGlobalSlug<TSlug>> => {
+    return restoreGlobalVersionLocal<TSlug>(this, options)
+  }
+
+  /**
+   * @description Restore version by ID
+   * @param options
+   * @returns version with specified ID
+   */
+  restoreVersion = async <TSlug extends CollectionSlug>(
+    options: RestoreVersionOptions<TSlug>,
+  ): Promise<DataFromCollectionSlug<TSlug>> => {
+    return restoreVersionLocal<TSlug>(this, options)
+  }
+
+  schema!: GraphQLSchema
+
+  secret!: string
+
+  sendEmail!: InitializedEmailAdapter['sendEmail']
+
+  types!: {
+    arrayTypes: any
+    blockInputTypes: any
+    blockTypes: any
+    fallbackLocaleInputType?: any
+    groupTypes: any
+    localeInputType?: any
+    tabTypes: any
+  }
+
+  unlock = async <TSlug extends CollectionSlug>(
+    options: UnlockOptions<TSlug>,
+  ): Promise<boolean> => {
+    return unlockLocal<TSlug>(this, options)
+  }
+
+  updateGlobal = async <TSlug extends GlobalSlug, TSelect extends SelectFromGlobalSlug<TSlug>>(
+    options: UpdateGlobalOptions<TSlug, TSelect>,
+  ): Promise<TransformGlobalWithSelect<TSlug, TSelect>> => {
+    return updateGlobalLocal<TSlug, TSelect>(this, options)
+  }
+
+  /**
+   * Validates a collection document candidate for selected locales without persisting data,
+   * versions, or files.
+   *
+   * Omit `id` to validate create data. With `id`, the stored main document is the default base;
+   * `draft: true` selects the newest available draft version and falls back to the main document.
+   * Partial candidate data is merged over that base. Field validation failures resolve to
+   * `{ valid: false, errors }`; access, argument, lookup, and other lifecycle errors throw.
+   *
+   * @see https://payloadcms.com/docs/validation/overview#local-api
+   */
+  validate = async <TSlug extends CollectionSlug>(
+    options: ValidateCollectionOptions<TSlug>,
+  ): Promise<ValidationResult> => {
+    return validateLocal<TSlug>(this, options)
+  }
+
+  /**
+   * Validates a global document candidate for selected locales without persisting data or
+   * versions.
+   *
+   * The stored main global is the default base; `draft: true` selects the newest available draft
+   * version and falls back to the main global. Partial candidate data is merged over that base.
+   * Field validation failures resolve to `{ valid: false, errors }`; access, argument, and other
+   * lifecycle errors throw.
+   *
+   * @see https://payloadcms.com/docs/validation/overview#local-api
+   */
+  validateGlobal = async <TSlug extends GlobalSlug>(
+    options: ValidateGlobalOptions<TSlug>,
+  ): Promise<ValidationResult> => {
+    return validateGlobalLocal<TSlug>(this, options)
+  }
+
+  validationRules!: (args: OperationArgs<any>) => ValidationRule[]
+
+  verifyEmail = async <TSlug extends CollectionSlug>(
+    options: VerifyEmailOptions<TSlug>,
+  ): Promise<boolean> => {
+    return verifyEmailLocal(this, options)
+  }
+
+  versions: {
+    [slug: string]: any // TODO: Type this
+  } = {}
+
+  async _initializeCrons() {
+    if (this.config.jobs.enabled && this.config.jobs.autoRun && !isNextBuild()) {
+      const DEFAULT_CRON = '* * * * *'
+      const DEFAULT_LIMIT = 10
+
+      const cronJobs =
+        typeof this.config.jobs.autoRun === 'function'
+          ? await this.config.jobs.autoRun(this)
+          : this.config.jobs.autoRun
+
+      await Promise.all(
+        cronJobs.map((cronConfig) => {
+          const jobAutorunCron = new Cron(
+            cronConfig.cron ?? DEFAULT_CRON,
+            async () => {
+              if (
+                _internal_jobSystemGlobals.shouldAutoSchedule &&
+                !cronConfig.disableScheduling &&
+                this.config.jobs.scheduling
+              ) {
+                await this.jobs.handleSchedules({
+                  allQueues: cronConfig.allQueues,
+                  queue: cronConfig.queue,
+                })
+              }
+
+              if (!_internal_jobSystemGlobals.shouldAutoRun) {
+                return
+              }
+
+              if (typeof this.config.jobs.shouldAutoRun === 'function') {
+                const shouldAutoRun = await this.config.jobs.shouldAutoRun(this)
+
+                if (!shouldAutoRun) {
+                  return
+                }
+              }
+
+              await this.jobs.run({
+                allQueues: cronConfig.allQueues,
+                limit: cronConfig.limit ?? DEFAULT_LIMIT,
+                overrideAccess: true,
+                queue: cronConfig.queue,
+                silent: cronConfig.silent,
+              })
+            },
+            {
+              catch: (err) => {
+                this.logger.error({ err, msg: 'Error in job queue cron job handler' })
+              },
+              // Do not run consecutive crons if previous crons still ongoing
+              protect: true,
+            },
+          )
+
+          this.crons.push(jobAutorunCron)
+        }),
+      )
+    }
+  }
+
+  async bin({
+    args,
+    cwd,
+    log,
+  }: {
+    args: string[]
+    cwd?: string
+    log?: boolean
+  }): Promise<{ code: number }> {
+    return new Promise((resolve, reject) => {
+      const spawned = spawn('node', [path.resolve(dirname, '../bin.js'), ...args], {
+        cwd,
+        stdio: log || log === undefined ? 'inherit' : 'ignore',
+      })
+
+      spawned.on('exit', (code) => {
+        resolve({ code: code! })
+      })
+
+      spawned.on('error', (error) => {
+        reject(error)
+      })
+    })
+  }
+
+  /**
+   * @description delete one or more documents
+   * @param options
+   * @returns Updated document(s)
+   */
+  delete<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: DeleteByIDOptions<TSlug, TSelect>,
+  ): Promise<TransformCollectionWithSelect<TSlug, TSelect>>
+
+  delete<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: DeleteManyOptions<TSlug, TSelect>,
+  ): Promise<BulkOperationResult<TSlug, TSelect>>
+
+  delete<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: DeleteOptions<TSlug, TSelect>,
+  ): Promise<BulkOperationResult<TSlug, TSelect> | TransformCollectionWithSelect<TSlug, TSelect>> {
+    return deleteLocal<TSlug, TSelect>(this, options)
+  }
+
+  /**
+   * @description Initializes Payload
+   * @param options
+   */
+  async init(options: InitOptions): Promise<Payload> {
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      process.env.PAYLOAD_DISABLE_DEPENDENCY_CHECKER !== 'true' &&
+      !checkedDependencies
+    ) {
+      checkedDependencies = true
+      void checkPayloadDependencies()
+    }
+
+    this.importMap = options.importMap!
+
+    if (!options?.config) {
+      throw new Error('Error: the payload config is required to initialize payload.')
+    }
+
+    this.config = await options.config
+    this.logger = getLogger('payload', this.config.logger)
+
+    if (!this.config.secret) {
+      throw new Error('Error: missing secret key. A secret key is needed to secure Payload.')
+    }
+
+    this.encryptionKeyring = buildEncryptionKeyring([
+      this.config.secret,
+      ...(this.config.previousSecrets ?? []),
+    ])
+    this.secret = this.encryptionKeyring.active.legacyKey
+
+    this.globals = {
+      config: this.config.globals,
+    }
+
+    for (const collection of this.config.collections) {
+      let customIDType: string | undefined = undefined
+      const findCustomID: TraverseFieldsCallback = ({ field }) => {
+        if (
+          ['array', 'blocks', 'group'].includes(field.type) ||
+          (field.type === 'tab' && 'name' in field)
+        ) {
+          return true
+        }
+
+        if (!fieldAffectsData(field)) {
+          return
+        }
+
+        if (field.name === 'id') {
+          customIDType = field.type
+          return true
+        }
+      }
+
+      traverseFields({
+        callback: findCustomID,
+        config: this.config,
+        fields: collection.fields,
+        parentIsLocalized: false,
+      })
+
+      this.collections[collection.slug] = {
+        config: collection,
+        customIDType,
+      }
+    }
+
+    this.blocks = this.config.blocks.reduce(
+      (blocks, block) => {
+        blocks[block.slug] = block
+        return blocks
+      },
+      {} as Record<string, FlattenedBlock>,
+    )
+
+    // Generate types on startup
+    if (process.env.NODE_ENV !== 'production' && this.config.typescript.autoGenerate !== false) {
+      // We cannot run it directly here, as generate-types imports json-schema-to-typescript, which breaks on turbopack.
+      // see: https://github.com/vercel/next.js/issues/66723
+      void this.bin({
+        args: ['generate:types'],
+        log: false,
+      })
+    }
+
+    this.db = this.config.db.init({ payload: this })
+    this.db.payload = this
+
+    this.kv = this.config.kv.init({ payload: this })
+
+    if (this.db?.init) {
+      await this.db.init()
+    }
+
+    if (!options.disableDBConnect && this.db.connect) {
+      await this.db.connect()
+    }
+
+    // Load email adapter
+    if (this.config.email instanceof Promise) {
+      const awaitedAdapter = await this.config.email
+      this.email = awaitedAdapter({ payload: this })
+    } else if (this.config.email) {
+      this.email = this.config.email({ payload: this })
+    } else {
+      if (process.env.NEXT_PHASE !== 'phase-production-build') {
+        this.logger.warn(
+          `No email adapter provided. Email will be written to console. More info at https://payloadcms.com/docs/email/overview.`,
+        )
+      }
+
+      this.email = consoleEmailAdapter({ payload: this })
+    }
+
+    // Warn if user is deploying to Vercel, and any upload collection is missing a storage adapter
+    if (process.env.VERCEL) {
+      const uploadCollWithoutAdapter = this.config.collections.filter(
+        (c) => c.upload && c.upload.adapter === undefined, // Uploads enabled, but no storage adapter provided
+      )
+
+      if (uploadCollWithoutAdapter.length) {
+        const slugs = uploadCollWithoutAdapter.map((c) => c.slug).join(', ')
+        this.logger.warn(
+          `Collections with uploads enabled require a storage adapter when deploying to Vercel. Collection(s) without storage adapters: ${slugs}. See https://payloadcms.com/docs/upload/storage-adapters for more info.`,
+        )
+      }
+    }
+
+    this.sendEmail = this.email['sendEmail']
+
+    serverInitTelemetry(this)
+
+    // 1. loop over collections, if collection has auth strategy, initialize and push to array
+    let jwtStrategyEnabled = false
+    this.authStrategies = this.config.collections.reduce((authStrategies, collection) => {
+      if (collection?.auth) {
+        if (collection.auth.strategies.length > 0) {
+          authStrategies.push(...collection.auth.strategies)
+        }
+
+        // 2. if api key enabled, push api key strategy into the array
+        if (collection.auth?.useAPIKey) {
+          authStrategies.push({
+            name: `${collection.slug}-api-key`,
+            authenticate: APIKeyAuthentication(collection),
+          })
+        }
+
+        // 3. if localStrategy flag is true
+        if (!collection.auth.disableLocalStrategy && !jwtStrategyEnabled) {
+          jwtStrategyEnabled = true
+        }
+      }
+
+      return authStrategies
+    }, [] as AuthStrategy[])
+
+    // 4. if enabled, push jwt strategy into authStrategies last
+    if (jwtStrategyEnabled) {
+      this.authStrategies.push({
+        name: 'local-jwt',
+        authenticate: JWTAuthentication,
+      })
+    }
+
+    try {
+      if (!options.disableOnInit) {
+        if (typeof options.onInit === 'function') {
+          await options.onInit(this)
+        }
+        if (typeof this.config.onInit === 'function') {
+          await this.config.onInit(this)
+        }
+      }
+    } catch (error) {
+      this.logger.error({ err: error }, 'Error running onInit function')
+      throw error
+    }
+
+    if (options.cron) {
+      await this._initializeCrons()
+    }
+
+    return this
+  }
+
+  update<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: UpdateManyOptions<TSlug, TSelect>,
+  ): Promise<BulkOperationResult<TSlug, TSelect>>
+
+  /**
+   * @description Update one or more documents
+   * @param options
+   * @returns Updated document(s)
+   */
+  update<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: UpdateByIDOptions<TSlug, TSelect>,
+  ): Promise<TransformCollectionWithSelect<TSlug, TSelect>>
+
+  update<TSlug extends CollectionSlug, TSelect extends SelectFromCollectionSlug<TSlug>>(
+    options: UpdateOptions<TSlug, TSelect>,
+  ): Promise<BulkOperationResult<TSlug, TSelect> | TransformCollectionWithSelect<TSlug, TSelect>> {
+    return updateLocal<TSlug, TSelect>(this, options)
+  }
+}
+
+const initialized = new BasePayload()
+
+// eslint-disable-next-line no-restricted-exports
+export default initialized
+
+export const reload = async (
+  config: SanitizedConfig,
+  payload: Payload,
+  skipImportMapGeneration?: boolean,
+  options?: InitOptions,
+): Promise<void> => {
+  if (typeof payload.db.destroy === 'function') {
+    // Only destroy db, as we then later only call payload.db.init and not payload.init
+    await payload.db.destroy()
+  }
+  payload.config = config
+
+  payload.collections = config.collections.reduce(
+    (collections, collection) => {
+      collections[collection.slug] = {
+        config: collection,
+        customIDType: payload.collections[collection.slug]?.customIDType,
+      }
+      return collections
+    },
+    {} as Record<string, any>,
+  )
+
+  payload.blocks = config.blocks.reduce(
+    (blocks, block) => {
+      blocks[block.slug] = block
+      return blocks
+    },
+    {} as Record<string, FlattenedBlock>,
+  )
+
+  payload.globals = {
+    config: config.globals,
+  }
+
+  // TODO: support HMR for other props in the future (see payload/src/index init()) that may change on Payload singleton
+
+  // Generate types
+  if (config.typescript.autoGenerate !== false) {
+    // We cannot run it directly here, as generate-types imports json-schema-to-typescript, which breaks on turbopack.
+    // see: https://github.com/vercel/next.js/issues/66723
+    void payload.bin({
+      args: ['generate:types'],
+      log: false,
+    })
+  }
+
+  // Generate import map
+  if (skipImportMapGeneration !== true && config.admin?.importMap?.autoGenerate !== false) {
+    // This may run outside of the admin panel, e.g. in the user's frontend, where we don't have an import map file.
+    // We don't want to throw an error in this case, as it would break the user's frontend.
+    // => just skip it => ignoreResolveError: true
+    await generateImportMap(config, {
+      ignoreResolveError: true,
+      log: true,
+    })
+  }
+
+  if (payload.db?.init) {
+    await payload.db.init()
+  }
+
+  if (!options?.disableDBConnect && payload.db.connect) {
+    await payload.db.connect({ hotReload: true })
+  }
+
+  ;(global as any)._payload_clientConfigs = {} as Record<keyof SupportedLanguages, ClientConfig>
+  ;(global as any)._payload_schemaMap = null
+  ;(global as any)._payload_clientSchemaMap = null
+  ;(global as any)._payload_doNotCacheClientConfig = true // This will help refreshing the client config cache more reliably. If you remove this, please test HMR + client config refreshing (do new fields appear in the document?)
+  ;(global as any)._payload_doNotCacheSchemaMap = true
+  ;(global as any)._payload_doNotCacheClientSchemaMap = true
+}
+
+type CachedPayload = {
+  devReloadCleanup: (() => void) | null
+  devReloadStrategy: DevReloadStrategy | null
+  initializedCrons: boolean
+  payload: null | Payload
+  promise: null | Promise<Payload>
+  reload: boolean | Promise<void>
+}
+
+let _cached: Map<string, CachedPayload> = (global as any)._payload
+
+if (!_cached) {
+  _cached = (global as any)._payload = new Map()
+}
+
+/**
+ * Memoized so the strategy has a stable identity across `getPayload` calls -
+ * {@link connectDevReload} reconnects whenever the strategy in effect changes.
+ */
+let memoizedNextJsDevReloadStrategy: DevReloadStrategy | null | undefined
+
+/**
+ * Subscribes the cached instance to the dev reload strategy currently in effect,
+ * reconnecting if that strategy has been replaced since the last call.
+ *
+ * Reconnecting matters for adapters whose server runtime is itself hot-reloadable:
+ * Vite discards and re-evaluates the module that called `registerDevReloadStrategy`,
+ * orphaning its subscription, while the cached instance lives on the Node global
+ * and survives. Connecting only once would leave the instance permanently deaf to
+ * further config changes.
+ */
+function connectDevReload({
+  cached,
+  strategyFromOptions,
+}: {
+  cached: CachedPayload
+  strategyFromOptions: DevReloadStrategy | undefined
+}): void {
+  if (
+    process.env.NODE_ENV === 'production' ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.DISABLE_PAYLOAD_HMR === 'true'
+  ) {
+    return
+  }
+
+  if (memoizedNextJsDevReloadStrategy === undefined) {
+    memoizedNextJsDevReloadStrategy = defaultNextJsDevReloadStrategy()
+  }
+
+  const strategy =
+    strategyFromOptions ?? getRegisteredDevReloadStrategy() ?? memoizedNextJsDevReloadStrategy
+
+  if (!strategy || strategy === cached.devReloadStrategy) {
+    return
+  }
+
+  cached.devReloadStrategy = strategy
+
+  try {
+    cached.devReloadCleanup?.()
+  } catch (_) {
+    // swallow cleanup errors from the strategy being replaced
+  }
+
+  cached.devReloadCleanup = null
+
+  try {
+    cached.devReloadCleanup = strategy.connect(() => {
+      if (cached.reload instanceof Promise) {
+        return
+      }
+      cached.reload = true
+    })
+  } catch (_) {
+    // swallow connection errors
+  }
+}
+
+/**
+ * Get a payload instance.
+ * This function is a wrapper around new BasePayload().init() that adds the following functionality on top of that:
+ *
+ * - smartly caches Payload instance on the module scope. That way, we prevent unnecessarily initializing Payload over and over again
+ * when calling getPayload multiple times or from multiple locations.
+ * - adds HMR support and reloads the payload instance when the config changes.
+ */
+export const getPayload = async (
+  options: {
+    /**
+     * Custom dev reload strategy. If provided, takes precedence over any strategy
+     * passed to `registerDevReloadStrategy` and over the default Next.js HMR
+     * WebSocket listener. The strategy's `connect` function receives a callback to
+     * trigger config reload.
+     *
+     * Pass a stable reference: a strategy is reconnected whenever its identity
+     * changes, so a new object literal on every call reconnects on every call.
+     */
+    devReloadStrategy?: DevReloadStrategy
+    /**
+     * A unique key to identify the payload instance. You can pass your own key if you want to cache this payload instance separately.
+     * This is useful if you pass a different payload config for each instance.
+     *
+     * @default 'default'
+     */
+    key?: string
+  } & InitOptions,
+): Promise<Payload> => {
+  if (!options?.config) {
+    throw new Error('Error: the payload config is required for getPayload to work.')
+  }
+
+  let alreadyCachedSameConfig = false
+
+  let cached = _cached.get(options.key ?? 'default')
+  if (!cached) {
+    cached = {
+      devReloadCleanup: null,
+      devReloadStrategy: null,
+      initializedCrons: Boolean(options.cron),
+      payload: null,
+      promise: null,
+      reload: false,
+    }
+    _cached.set(options.key ?? 'default', cached)
+  } else {
+    alreadyCachedSameConfig = true
+  }
+
+  if (alreadyCachedSameConfig) {
+    // alreadyCachedSameConfig => already called onInit once, but same config => no need to call onInit again.
+    // calling onInit again would only make sense if a different config was passed.
+    options.disableOnInit = true
+  }
+
+  if (cached.payload) {
+    connectDevReload({ cached, strategyFromOptions: options.devReloadStrategy })
+
+    if (options.cron && !cached.initializedCrons) {
+      // getPayload called with crons enabled, but existing cached version does not have crons initialized. => Initialize crons in existing cached version
+      cached.initializedCrons = true
+      await cached.payload._initializeCrons()
+    }
+
+    if (cached.reload === true) {
+      let resolve!: () => void
+
+      // getPayload is called multiple times, in parallel. However, we only want to run `await reload` once. By immediately setting cached.reload to a promise,
+      // we can ensure that all subsequent calls will wait for the first reload to finish. So if we set it here, the 2nd call of getPayload
+      // will reach `if (cached.reload instanceof Promise) {` which then waits for the first reload to finish.
+      cached.reload = new Promise((res) => (resolve = res))
+      const config = await options.config
+
+      // Reload the payload instance after a config change (triggered by HMR in development).
+      // The second parameter (false) forces import map regeneration rather than deciding based on options.importMap.
+      //
+      // Why we always regenerate import map: getPayload() may be called from multiple sources (admin panel, frontend, etc.)
+      // that share the same cache but may pass different importMap values. Since call order is unpredictable,
+      // we cannot rely on options.importMap to determine if regeneration is needed.
+      //
+      // Example scenario: If the frontend calls getPayload() without importMap first, followed by the admin
+      // panel calling it with importMap, we'd incorrectly skip generation for the admin panel's needs.
+      // By always regenerating on reload, we ensure the import map stays in sync with the updated config.
+      await reload(config, cached.payload, false, options)
+
+      resolve()
+      cached.reload = false
+    }
+
+    if (cached.reload instanceof Promise) {
+      await cached.reload
+    }
+    if (options?.importMap) {
+      cached.payload.importMap = options.importMap
+    }
+    return cached.payload
+  }
+
+  try {
+    if (!cached.promise) {
+      // no need to await options.config here, as it's already awaited in the BasePayload.init
+      cached.promise = new BasePayload().init(options)
+    }
+
+    cached.payload = await cached.promise
+
+    connectDevReload({ cached, strategyFromOptions: options.devReloadStrategy })
+  } catch (e) {
+    cached.promise = null
+    // add identifier to error object, so that our error logger in routeError.ts does not attempt to re-initialize getPayload
+    ;(e as { payloadInitError?: boolean }).payloadInitError = true
+    throw e
+  }
+
+  if (options?.importMap) {
+    cached.payload.importMap = options.importMap
+  }
+
+  return cached.payload
+}
+
+type Payload = BasePayload
+
+interface RequestContext {
+  [key: string]: unknown
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface DatabaseAdapter extends BaseDatabaseAdapter {}
+export type { Payload, RequestContext }
+export * from './auth/index.js'
+export { jwtSign } from './auth/jwt.js'
+export { JWT_AUTH_VERSION } from './auth/jwtAuth.js'
+export type { JWTAuthVersion } from './auth/jwtAuth.js'
+export { accessOperation } from './auth/operations/access.js'
+export { forgotPasswordOperation } from './auth/operations/forgotPassword.js'
+export { initOperation } from './auth/operations/init.js'
+export type { LoginResult } from './auth/operations/login.js'
+export { checkLoginPermission } from './auth/operations/login.js'
+export { loginOperation } from './auth/operations/login.js'
+export { logoutOperation } from './auth/operations/logout.js'
+export type { MeOperationResult } from './auth/operations/me.js'
+export { meOperation } from './auth/operations/me.js'
+export { refreshOperation } from './auth/operations/refresh.js'
+export { registerFirstUserOperation } from './auth/operations/registerFirstUser.js'
+export { resetPasswordOperation } from './auth/operations/resetPassword.js'
+export { unlockOperation } from './auth/operations/unlock.js'
+export { verifyEmailOperation } from './auth/operations/verifyEmail.js'
+export { redeemRefreshToken } from './auth/redeemRefreshToken.js'
+export { rotateSecret } from './auth/rotateSecret.js'
+export type { RotateSecretArgs, RotateSecretResult } from './auth/rotateSecret.js'
+export { JWTAuthentication } from './auth/strategies/jwt.js'
+export { incrementLoginAttempts } from './auth/strategies/local/incrementLoginAttempts.js'
+export { resetLoginAttempts } from './auth/strategies/local/resetLoginAttempts.js'
+export type {
+  AuthStrategyFunction,
+  AuthStrategyFunctionArgs,
+  AuthStrategyResult,
+  CollectionPermission,
+  DocumentPermissions,
+  FieldPermissions,
+  GlobalPermission,
+  IncomingAuthType,
+  Permission,
+  Permissions,
+  SanitizedCollectionPermission,
+  SanitizedDocumentPermissions,
+  SanitizedFieldPermissions,
+  SanitizedGlobalPermission,
+  SanitizedPermissions,
+  VerifyConfig,
+} from './auth/types.js'
+export { generateImportMap } from './cli/commands/generateImportMap/generateImportMap.js'
+export type { ImportMap } from './cli/commands/generateImportMap/generateImportMap.js'
+
+export { genImportMapIterateFields } from './cli/commands/generateImportMap/iterateFields.js'
+export { registerCLIExitCodeHandler } from './cli/runtime/exitCodeHandlers.js'
+export type { CLIExitCodeHandler } from './cli/runtime/exitCodeHandlers.js'
+export {
+  type ClientCollectionConfig,
+  createClientCollectionConfig,
+  createClientCollectionConfigs,
+  type ServerOnlyCollectionAdminProperties,
+  type ServerOnlyCollectionProperties,
+  type ServerOnlyUploadProperties,
+} from './collections/config/client.js'
+
+export type {
+  AfterChangeHook as CollectionAfterChangeHook,
+  AfterDeleteHook as CollectionAfterDeleteHook,
+  AfterErrorHook as CollectionAfterErrorHook,
+  AfterForgotPasswordHook as CollectionAfterForgotPasswordHook,
+  AfterLoginHook as CollectionAfterLoginHook,
+  AfterLogoutHook as CollectionAfterLogoutHook,
+  AfterMeHook as CollectionAfterMeHook,
+  AfterOperationHook as CollectionAfterOperationHook,
+  AfterReadHook as CollectionAfterReadHook,
+  AfterRefreshHook as CollectionAfterRefreshHook,
+  AuthCollection,
+  AuthOperationsFromCollectionSlug,
+  BaseFilter,
+  BaseListFilter,
+  BeforeChangeHook as CollectionBeforeChangeHook,
+  BeforeDeleteHook as CollectionBeforeDeleteHook,
+  BeforeLoginHook as CollectionBeforeLoginHook,
+  BeforeOperationHook as CollectionBeforeOperationHook,
+  BeforeReadHook as CollectionBeforeReadHook,
+  BeforeValidateHook as CollectionBeforeValidateHook,
+  BulkOperationResult,
+  Collection,
+  CollectionAccess,
+  CollectionAdminOptions,
+  CollectionConfig,
+  DataFromCollectionSlug,
+  HookOperationType,
+  IDTypeForCollectionSlug,
+  MeHook as CollectionMeHook,
+  RefreshHook as CollectionRefreshHook,
+  RequiredDataFromCollection,
+  RequiredDataFromCollectionSlug,
+  SanitizedCollectionConfig,
+  SanitizedJoins,
+  TypeWithID,
+  TypeWithTimestamps,
+} from './collections/config/types.js'
+
+export type { CompoundIndex, FoldersConfig, TagsConfig } from './collections/config/types.js'
+
+export type { SanitizedCompoundIndex } from './collections/config/types.js'
+
+export { createDataloaderCacheKey, getDataLoader } from './collections/dataloader.js'
+export { countOperation } from './collections/operations/count.js'
+
+export { createOperation } from './collections/operations/create.js'
+export { deleteOperation } from './collections/operations/delete.js'
+export { deleteByIDOperation } from './collections/operations/deleteByID.js'
+export { docAccessOperation } from './collections/operations/docAccess.js'
+export { duplicateOperation } from './collections/operations/duplicate.js'
+export { findOperation } from './collections/operations/find.js'
+export { findByIDOperation } from './collections/operations/findByID.js'
+export { findVersionByIDOperation } from './collections/operations/findVersionByID.js'
+export { findVersionsOperation } from './collections/operations/findVersions.js'
+export {
+  countDocumentsInputSchema,
+  countDocumentsLocalInputSchema,
+  countVersionsInputSchema,
+  countVersionsLocalInputSchema,
+  createDocumentsInputSchema,
+  createDocumentsLocalInputSchema,
+  deleteDocumentsInputSchema,
+  deleteDocumentsLocalInputSchema,
+  duplicateDocumentInputSchema,
+  duplicateDocumentLocalInputSchema,
+  findDistinctInputSchema,
+  findDistinctLocalInputSchema,
+  findDocumentsInputSchema,
+  findDocumentsLocalInputSchema,
+  findVersionByIDInputSchema,
+  findVersionByIDLocalInputSchema,
+  findVersionsInputSchema,
+  findVersionsLocalInputSchema,
+  getCollectionSchemaInputSchema,
+  restoreVersionInputSchema,
+  restoreVersionLocalInputSchema,
+  updateDocumentInputSchema,
+  updateDocumentLocalInputSchema,
+} from './collections/operations/inputSchemas.js'
+export type { ValidateCollectionOptions } from './collections/operations/local/validate.js'
+export { renameFileOperation } from './collections/operations/renameFile.js'
+export { restoreVersionOperation } from './collections/operations/restoreVersion.js'
+export { updateOperation } from './collections/operations/update.js'
+export { updateByIDOperation } from './collections/operations/updateByID.js'
+export { buildConfig } from './config/build.js'
+export {
+  type ClientConfig,
+  createClientConfig,
+  type CreateClientConfigArgs,
+  createUnauthenticatedClientConfig,
+  serverOnlyAdminConfigProperties,
+  serverOnlyConfigProperties,
+  type UnauthenticatedClientConfig,
+} from './config/client.js'
+export { addDefaultsToConfig } from './config/defaults.js'
+
+export { definePlugin } from './config/definePlugin.js'
+export { type OrderableEndpointBody } from './config/orderable/index.js'
+export { sanitizeConfig } from './config/sanitize.js'
+
+export type * from './config/types.js'
+export { combineQueries } from './database/combineQueries.js'
+export { createDatabaseAdapter } from './database/createDatabaseAdapter.js'
+export { defaultBeginTransaction } from './database/defaultBeginTransaction.js'
+export { flattenWhereToOperators } from './database/flattenWhereToOperators.js'
+export { getLocalizedPaths } from './database/getLocalizedPaths.js'
+export { createMigration } from './database/migrations/createMigration.js'
+export { findMigrationDir } from './database/migrations/findMigrationDir.js'
+export { getMigrations } from './database/migrations/getMigrations.js'
+export { getPredefinedMigration } from './database/migrations/getPredefinedMigration.js'
+export { migrate } from './database/migrations/migrate.js'
+export { migrateDown } from './database/migrations/migrateDown.js'
+export { migrateRefresh } from './database/migrations/migrateRefresh.js'
+export { migrateReset } from './database/migrations/migrateReset.js'
+export { migrateStatus } from './database/migrations/migrateStatus.js'
+export { migrationsCollection } from './database/migrations/migrationsCollection.js'
+export { migrationTemplate } from './database/migrations/migrationTemplate.js'
+export { readMigrationFiles } from './database/migrations/readMigrationFiles.js'
+export { writeMigrationIndex } from './database/migrations/writeMigrationIndex.js'
+export type * from './database/queryValidation/types.js'
+export type { EntityPolicies, PathToQuery } from './database/queryValidation/types.js'
+export { validateQueryPaths } from './database/queryValidation/validateQueryPaths.js'
+export { validateSearchParam } from './database/queryValidation/validateSearchParams.js'
+export type {
+  BaseDatabaseAdapter,
+  BatchProcessing,
+  BatchProcessingArgs,
+  BatchProcessingOperation,
+  BatchProcessingResult,
+  BeginTransaction,
+  CommitTransaction,
+  Connect,
+  Copy,
+  CopyArgs,
+  Count,
+  CountArgs,
+  CountGlobalVersionArgs,
+  CountGlobalVersions,
+  CountVersions,
+  Create,
+  CreateArgs,
+  CreateGlobal,
+  CreateGlobalArgs,
+  CreateGlobalVersion,
+  CreateGlobalVersionArgs,
+  CreateMigration,
+  CreateMigrationResult,
+  CreateVersion,
+  CreateVersionArgs,
+  DatabaseAdapterResult as DatabaseAdapterObj,
+  DBIdentifierName,
+  DeleteMany,
+  DeleteManyArgs,
+  DeleteOne,
+  DeleteOneArgs,
+  DeleteVersions,
+  DeleteVersionsArgs,
+  Destroy,
+  Find,
+  FindArgs,
+  FindDistinct,
+  FindGlobal,
+  FindGlobalArgs,
+  FindGlobalVersions,
+  FindGlobalVersionsArgs,
+  FindOne,
+  FindOneArgs,
+  FindVersions,
+  FindVersionsArgs,
+  GenerateSchema,
+  Init,
+  Migration,
+  MigrationData,
+  MigrationResult,
+  MigrationStatus,
+  MigrationTemplateArgs,
+  PaginatedDistinctDocs,
+  PaginatedDocs,
+  QueryDrafts,
+  QueryDraftsArgs,
+  RollbackTransaction,
+  Transaction,
+  UpdateGlobal,
+  UpdateGlobalArgs,
+  UpdateGlobalVersion,
+  UpdateGlobalVersionArgs,
+  UpdateJobs,
+  UpdateJobsArgs,
+  UpdateMany,
+  UpdateManyArgs,
+  UpdateOne,
+  UpdateOneArgs,
+  UpdateVersion,
+  UpdateVersionArgs,
+  Upsert,
+  UpsertArgs,
+} from './database/types.js'
+export type { DynamicMigrationTemplate } from './database/types.js'
+
+export type { EmailAdapter as PayloadEmailAdapter, SendEmailOptions } from './email/types.js'
+export {
+  APIError,
+  APIErrorName,
+  AuthenticationError,
+  DuplicateCollection,
+  DuplicateFieldName,
+  DuplicateGlobal,
+  ErrorDeletingFile,
+  FileRetrievalError,
+  FileUploadError,
+  Forbidden,
+  InvalidConfiguration,
+  InvalidFieldName,
+  InvalidFieldRelationship,
+  Locked,
+  LockedAuth,
+  MissingCollectionLabel,
+  MissingEditorProp,
+  MissingFieldInputOptions,
+  MissingFieldType,
+  MissingFile,
+  NotFound,
+  QueryError,
+  TransformerContractError,
+  UnauthorizedError,
+  UnverifiedEmail,
+  ValidationError,
+  ValidationErrorName,
+} from './errors/index.js'
+
+export type { ValidationFieldError } from './errors/index.js'
+export type { Authorship, SanitizedAuthorship } from './fields/baseFields/authorship/index.js'
+export { createCreatedByField, createUpdatedByField } from './fields/baseFields/authorship/index.js'
+export { baseBlockFields } from './fields/baseFields/baseBlockFields.js'
+export { baseIDField } from './fields/baseFields/baseIDField.js'
+
+export { getSlugFallbackValue } from './fields/baseFields/slug/getSlugFallbackValue.js'
+
+export interface FieldCustom extends Record<string, any> {}
+
+export interface CollectionCustom extends Record<string, any> {}
+
+export interface CollectionAdminCustom extends Record<string, any> {}
+
+export interface GlobalCustom extends Record<string, any> {}
+
+export interface GlobalAdminCustom extends Record<string, any> {}
+
+export type { SlugFieldClientProps } from './fields/baseFields/slug/types.js'
+export {
+  createClientBlocks,
+  createClientField,
+  createClientFields,
+  type ServerOnlyFieldAdminProperties,
+  type ServerOnlyFieldProperties,
+} from './fields/config/client.js'
+
+export { sanitizeField, sanitizeFields } from './fields/config/sanitize.js'
+
+export interface FieldCustom extends Record<string, any> {}
+
+export interface CollectionCustom extends Record<string, any> {}
+
+export interface CollectionAdminCustom extends Record<string, any> {}
+
+export interface GlobalCustom extends Record<string, any> {}
+
+export interface GlobalAdminCustom extends Record<string, any> {}
+
+export type { SanitizeFieldArgs } from './fields/config/sanitize.js'
+export type {
+  AdminClient,
+  ArrayField,
+  ArrayFieldClient,
+  BaseValidateOptions,
+  Block,
+  BlockJSX,
+  BlocksField,
+  BlocksFieldClient,
+  BrowserAutoComplete,
+  CheckboxField,
+  CheckboxFieldClient,
+  ClientBlock,
+  ClientField,
+  ClientFieldProps,
+  CodeField,
+  CodeFieldClient,
+  CollapsibleField,
+  CollapsibleFieldClient,
+  Condition,
+  DateField,
+  DateFieldClient,
+  EmailField,
+  EmailFieldClient,
+  Field,
+  FieldAccess,
+  FieldAccessArgs,
+  FieldAffectingData,
+  FieldAffectingDataClient,
+  FieldBase,
+  FieldBaseClient,
+  FieldHook,
+  FieldHookArgs,
+  FieldPosition,
+  FieldPresentationalOnly,
+  FieldPresentationalOnlyClient,
+  FieldTypes,
+  FieldWithMany,
+  FieldWithManyClient,
+  FieldWithMaxDepth,
+  FieldWithMaxDepthClient,
+  FieldWithPath,
+  FieldWithPathClient,
+  FieldWithSubFields,
+  FieldWithSubFieldsClient,
+  FilterOptions,
+  FilterOptionsProps,
+  FlattenedArrayField,
+  FlattenedBlock,
+  FlattenedBlocksField,
+  FlattenedField,
+  FlattenedGroupField,
+  FlattenedJoinField,
+  FlattenedTabAsField,
+  GroupField,
+  GroupFieldClient,
+  HookName,
+  JoinField,
+  JoinFieldClient,
+  JSONField,
+  JSONFieldClient,
+  Labels,
+  LabelsClient,
+  NamedGroupField,
+  NamedGroupFieldClient,
+  NamedTab,
+  NonPresentationalField,
+  NonPresentationalFieldClient,
+  NumberField,
+  NumberFieldClient,
+  Option,
+  OptionLabel,
+  OptionObject,
+  PointField,
+  PointFieldClient,
+  PolymorphicRelationshipField,
+  PolymorphicRelationshipFieldClient,
+  RadioField,
+  RadioFieldClient,
+  RelationshipField,
+  RelationshipFieldClient,
+  RelationshipValue,
+  RichTextField,
+  RichTextFieldClient,
+  RowField,
+  RowFieldClient,
+  SelectField,
+  SelectFieldClient,
+  SingleRelationshipField,
+  SingleRelationshipFieldClient,
+  SlugField,
+  SlugFieldClient,
+  Tab,
+  TabAsField,
+  TabAsFieldClient,
+  TabsField,
+  TabsFieldClient,
+  TextareaField,
+  TextareaFieldClient,
+  TextField,
+  TextFieldClient,
+  UIField,
+  UIFieldClient,
+  UnnamedGroupField,
+  UnnamedGroupFieldClient,
+  UnnamedTab,
+  UploadField,
+  UploadFieldClient,
+  Validate,
+  ValidateOptions,
+  ValueWithRelation,
+} from './fields/config/types.js'
+
+export { getDefaultValue } from './fields/getDefaultValue.js'
+export { traverseFields as afterChangeTraverseFields } from './fields/hooks/afterChange/traverseFields.js'
+
+export { promise as afterReadPromise } from './fields/hooks/afterRead/promise.js'
+export { traverseFields as afterReadTraverseFields } from './fields/hooks/afterRead/traverseFields.js'
+export { traverseFields as beforeChangeTraverseFields } from './fields/hooks/beforeChange/traverseFields.js'
+export { traverseFields as beforeValidateTraverseFields } from './fields/hooks/beforeValidate/traverseFields.js'
+
+export { sortableFieldTypes } from './fields/sortableFieldTypes.js'
+
+export { validateBlocksFilterOptions, validations } from './fields/validations.js'
+export type {
+  ArrayFieldValidation,
+  BlocksFieldValidation,
+  CheckboxFieldValidation,
+  CodeFieldValidation,
+  ConfirmPasswordFieldValidation,
+  DateFieldValidation,
+  EmailFieldValidation,
+  JSONFieldValidation,
+  NumberFieldManyValidation,
+  NumberFieldSingleValidation,
+  NumberFieldValidation,
+  PasswordFieldValidation,
+  PointFieldValidation,
+  RadioFieldValidation,
+  RelationshipFieldManyValidation,
+  RelationshipFieldSingleValidation,
+  RelationshipFieldValidation,
+  RichTextFieldValidation,
+  SelectFieldManyValidation,
+  SelectFieldSingleValidation,
+  SelectFieldValidation,
+  TextareaFieldValidation,
+  TextFieldManyValidation,
+  TextFieldSingleValidation,
+  TextFieldValidation,
+  UploadFieldManyValidation,
+  UploadFieldSingleValidation,
+  UploadFieldValidation,
+  UsernameFieldValidation,
+} from './fields/validations.js'
+
+export {
+  type ClientGlobalConfig,
+  createClientGlobalConfig,
+  createClientGlobalConfigs,
+  type ServerOnlyGlobalAdminProperties,
+  type ServerOnlyGlobalProperties,
+} from './globals/config/client.js'
+export type {
+  AfterChangeHook as GlobalAfterChangeHook,
+  AfterReadHook as GlobalAfterReadHook,
+  BeforeChangeHook as GlobalBeforeChangeHook,
+  BeforeOperationHook as GlobalBeforeOperationHook,
+  BeforeReadHook as GlobalBeforeReadHook,
+  BeforeValidateHook as GlobalBeforeValidateHook,
+  DataFromGlobalSlug,
+  GlobalAccess,
+  GlobalAdminOptions,
+  GlobalConfig,
+  SanitizedGlobalConfig,
+} from './globals/config/types.js'
+export { docAccessOperation as docAccessOperationGlobal } from './globals/operations/docAccess.js'
+export { findOneOperation } from './globals/operations/findOne.js'
+export { findVersionByIDOperation as findVersionByIDOperationGlobal } from './globals/operations/findVersionByID.js'
+export { findVersionsOperation as findVersionsOperationGlobal } from './globals/operations/findVersions.js'
+export {
+  countGlobalVersionsInputSchema,
+  countGlobalVersionsLocalInputSchema,
+  findGlobalInputSchema,
+  findGlobalLocalInputSchema,
+  findGlobalVersionByIDInputSchema,
+  findGlobalVersionByIDLocalInputSchema,
+  findGlobalVersionsInputSchema,
+  findGlobalVersionsLocalInputSchema,
+  getGlobalSchemaInputSchema,
+  restoreGlobalVersionInputSchema,
+  restoreGlobalVersionLocalInputSchema,
+  updateGlobalInputSchema,
+  updateGlobalLocalInputSchema,
+} from './globals/operations/inputSchemas.js'
+export type { ValidateGlobalOptions } from './globals/operations/local/validate.js'
+export { restoreVersionOperation as restoreVersionOperationGlobal } from './globals/operations/restoreVersion.js'
+export { updateOperation as updateOperationGlobal } from './globals/operations/update.js'
+export {
+  DEFAULT_ALLOW_HAS_MANY,
+  DEFAULT_HIERARCHY_TREE_LIMIT,
+  getHierarchyFieldName,
+  HIERARCHY_DEFAULT_LOCALE,
+  HIERARCHY_SLUG_PATH_FIELD,
+  HIERARCHY_TITLE_PATH_FIELD,
+} from './hierarchy/constants.js'
+export { createFolderField } from './hierarchy/createFolderField.js'
+export type { CreateFolderFieldOptions } from './hierarchy/createFolderField.js'
+export { createTagField } from './hierarchy/createTagField.js'
+export type { CreateTagFieldOptions } from './hierarchy/createTagField.js'
+export { getInitialTreeData } from './hierarchy/getInitialTreeData.js'
+export type { GetInitialTreeDataArgs, InitialTreeData } from './hierarchy/getInitialTreeData.js'
+export { injectHierarchyButton } from './hierarchy/injectHierarchyButton.js'
+export { resolveHierarchyCollections } from './hierarchy/resolveHierarchyCollections.js'
+export type {
+  HierarchyConfig,
+  SanitizedHierarchyConfig,
+  SanitizedHierarchyRelatedCollection,
+} from './hierarchy/types.js'
+export type { Ancestor } from './hierarchy/utils/getAncestors.js'
+export { getAncestors } from './hierarchy/utils/getAncestors.js'
+
+export * from './kv/adapters/DatabaseKVAdapter.js'
+export * from './kv/adapters/InMemoryKVAdapter.js'
+export * from './kv/index.js'
+export type {
+  CollapsedPreferences,
+  CollectionPreferences,
+  /**
+   * @deprecated Use `CollectionPreferences` instead.
+   */
+  CollectionPreferences as ListPreferences,
+  ColumnPreference,
+  DocumentPreferences,
+  FieldsPreferences,
+  InsideFieldsPreferences,
+  PinnedDocument,
+  PinnedDocumentsPreferences,
+  PreferenceRequest,
+  PreferenceUpdateRequest,
+  RecentlyViewedItem,
+  RecentlyViewedPreferences,
+  TabsPreferences,
+} from './preferences/types.js'
+export type { QueryPreset } from './query-presets/types.js'
+export { jobAfterRead } from './queues/config/collection.js'
+
+export type { JobsConfig, RunJobAccess, RunJobAccessArgs } from './queues/config/types/index.js'
+export type {
+  RunInlineTaskFunction,
+  RunTaskFunction,
+  RunTaskFunctions,
+  TaskConfig,
+  TaskHandler,
+  TaskHandlerArgs,
+  TaskHandlerResult,
+  TaskHandlerResults,
+  TaskInput,
+  TaskOutput,
+  TaskSlug,
+} from './queues/config/types/taskTypes.js'
+export type {
+  ConcurrencyConfig,
+  JobLog,
+  JobTaskStatus,
+  SingleTaskStatus,
+  WorkflowConfig,
+  WorkflowHandler,
+  WorkflowSlug,
+} from './queues/config/types/workflowTypes.js'
+
+export { JobCancelledError } from './queues/errors/index.js'
+export { countRunnableOrActiveJobsForQueue } from './queues/operations/handleSchedules/countRunnableOrActiveJobsForQueue.js'
+export { importHandlerPath } from './queues/operations/runJobs/runJob/importHandlerPath.js'
+
+export {
+  _internal_jobSystemGlobals,
+  _internal_resetJobSystemGlobals,
+  getCurrentDate,
+} from './queues/utilities/getCurrentDate.js'
+export { getLocalI18n } from './translations/getLocalI18n.js'
+export * from './types/index.js'
+export type { ValidationResult } from './types/validation.js'
+export { generatePayloadFileURL } from './uploads/generatePayloadFileURL.js'
+export { getFileByPath } from './uploads/getFileByPath.js'
+export { _internal_safeFetchGlobal } from './uploads/safeFetch.js'
+export type * from './uploads/transformers/types.js'
+export type * from './uploads/types.js'
+export { addDataAndFileToRequest } from './utilities/addDataAndFileToRequest.js'
+export { addLocalesToRequestFromData, sanitizeLocales } from './utilities/addLocalesToRequest.js'
+export {
+  batchProcessing,
+  type BatchProcessingOptions,
+  type BatchProcessorResult,
+} from './utilities/batchProcessing.js'
+export { canAccessAdmin } from './utilities/canAccessAdmin.js'
+export { commitTransaction } from './utilities/commitTransaction.js'
+export {
+  configToJSONSchema,
+  entityToJSONSchema,
+  entityToStandaloneJSONSchema,
+  fieldsToJSONSchema,
+  type FieldsToJSONSchemaArgs,
+  registerBlockInterface,
+  type SchemaVariant,
+  withNullableJSONSchemaType,
+} from './utilities/configToJSONSchema.js'
+export { createArrayFromCommaDelineated } from './utilities/createArrayFromCommaDelineated.js'
+export {
+  createPayloadRequest,
+  type CreatePayloadRequestArgs,
+} from './utilities/createPayloadRequest.js'
+export { createPayloadRequestFromWebRequest } from './utilities/createPayloadRequestFromWebRequest.js'
+export {
+  deepCopyObject,
+  deepCopyObjectComplex,
+  deepCopyObjectSimple,
+} from './utilities/deepCopyObject.js'
+export {
+  deepMerge,
+  deepMergeWithCombinedArrays,
+  deepMergeWithReactComponents,
+  deepMergeWithSourceArrays,
+} from './utilities/deepMerge.js'
+export {
+  checkDependencies,
+  type CustomVersionParser,
+} from './utilities/dependencies/dependencyChecker.js'
+export { getDependencies } from './utilities/dependencies/getDependencies.js'
+export { dynamicImport } from './utilities/dynamicImport.js'
+export {
+  getCollectionInputSchema,
+  getGlobalInputSchema,
+} from './utilities/entityInputSchema/getEntityInputSchema.js'
+export type { EntityInputSchema } from './utilities/entityInputSchema/types.js'
+export {
+  validateCollectionData,
+  validateGlobalData,
+} from './utilities/entityInputSchema/validateEntityData.js'
+export { escapeRegExp } from './utilities/escapeRegExp.js'
+export {
+  findUp,
+  findUpSync,
+  pathExistsAndIsAccessible,
+  pathExistsAndIsAccessibleSync,
+} from './utilities/findUp.js'
+export { flattenAllFields } from './utilities/flattenAllFields.js'
+export { flattenTopLevelFields } from './utilities/flattenTopLevelFields.js'
+export { formatErrors } from './utilities/formatErrors.js'
+export { formatLabels, formatNames, toWords } from './utilities/formatLabels.js'
+export { getBlockSelect } from './utilities/getBlockSelect.js'
+export { getCollectionIDFieldTypes } from './utilities/getCollectionIDFieldTypes.js'
+export { getFieldByPath } from './utilities/getFieldByPath.js'
+export { getObjectDotNotation } from './utilities/getObjectDotNotation.js'
+export { getRequestLanguage } from './utilities/getRequestLanguage.js'
+export { getUniqueFieldValue } from './utilities/getUniqueFieldValue.js'
+export { hasDraftsEnabled, hasDraftValidationEnabled } from './utilities/getVersionsConfig.js'
+export {
+  getCollectionVirtualFieldNames,
+  getGlobalVirtualFieldNames,
+  stripVirtualFields,
+} from './utilities/getVirtualFieldNames.js'
+export { handleEndpoints } from './utilities/handleEndpoints.js'
+export { headersWithCors } from './utilities/headersWithCors.js'
+export { initTransaction } from './utilities/initTransaction.js'
+export { isEntityHidden } from './utilities/isEntityHidden.js'
+export { isolateObjectProperty } from './utilities/isolateObjectProperty.js'
+export { isPlainObject } from './utilities/isPlainObject.js'
+export { isValidID } from './utilities/isValidID.js'
+export { killTransaction } from './utilities/killTransaction.js'
+export { logError } from './utilities/logError.js'
+export { defaultLoggerOptions } from './utilities/logger.js'
+export type { PayloadLogger } from './utilities/logger.js'
+export { mapAsync } from './utilities/mapAsync.js'
+export { mergeHeaders } from './utilities/mergeHeaders.js'
+export { parseDocumentID } from './utilities/parseDocumentID.js'
+export { parseParams } from './utilities/parseParams/index.js'
+export type { ParsedParams, RawParams } from './utilities/parseParams/index.js'
+export { sanitizeFallbackLocale } from './utilities/sanitizeFallbackLocale.js'
+export { sanitizeJoinParams } from './utilities/sanitizeJoinParams.js'
+export type { JoinParams } from './utilities/sanitizeJoinParams.js'
+export { sanitizePopulateParam } from './utilities/sanitizePopulateParam.js'
+export { sanitizeSelectParam } from './utilities/sanitizeSelectParam.js'
+export { sanitizeSortParams } from './utilities/sanitizeSortParams.js'
+export { getConfigInfoInputSchema } from './utilities/sharedInputSchemas.js'
+export { stripUnselectedFields } from './utilities/stripUnselectedFields.js'
+export { transformPointDataToPayload } from './utilities/transformPointDataToPayload.js'
+export { traverseFields } from './utilities/traverseFields.js'
+export type { TraverseFieldsCallback } from './utilities/traverseFields.js'
+export { strictObject } from './utilities/zod.js'
+export { buildVersionCollectionFields } from './versions/buildCollectionFields.js'
+export { buildVersionGlobalFields } from './versions/buildGlobalFields.js'
+export { buildVersionCompoundIndexes } from './versions/buildVersionCompoundIndexes.js'
+
+export { versionDefaults } from './versions/defaults.js'
+export { deleteCollectionVersions } from './versions/deleteCollectionVersions.js'
+export { appendVersionToQueryKey } from './versions/drafts/appendVersionToQueryKey.js'
+export { getQueryDraftsSort } from './versions/drafts/getQueryDraftsSort.js'
+export { enforceMaxVersions } from './versions/enforceMaxVersions.js'
+export { getLatestCollectionVersion } from './versions/getLatestCollectionVersion.js'
+export { getLatestGlobalVersion } from './versions/getLatestGlobalVersion.js'
+
+export { saveVersion } from './versions/saveVersion.js'
+export type { SchedulePublishTaskInput } from './versions/schedule/types.js'
+
+export type { SchedulePublish, TypeWithVersion } from './versions/types.js'
+export { deepMergeSimple } from '@payloadcms/translations/utilities'
+export { z } from 'zod/mini'

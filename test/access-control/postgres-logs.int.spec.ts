@@ -1,0 +1,308 @@
+import type { CollectionPermission, PayloadRequest } from 'payload'
+
+import { createPayloadRequest } from 'payload'
+import { getEntityPermissions } from 'payload/internal'
+import { expect, vitest } from 'vitest'
+
+import { test } from '../__helpers/int/vitest.js'
+import { whereCacheSameSlug, whereCacheUniqueSlug } from './shared.js'
+
+let req: PayloadRequest
+
+test.suite(
+  'Access Control - postgres logs',
+  { config: './config.postgreslogs.ts', db: (adapter) => adapter.startsWith('postgres') },
+  () => {
+    test.beforeEach(async ({ payload }) => {
+      req = await createPayloadRequest({
+        payload,
+        user: {
+          id: 123 as any,
+          collection: 'users',
+          roles: ['admin'],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          email: 'test@test.com',
+        },
+      })
+    })
+
+    test.describe('Tests', () => {
+      test.describe('where query cache - same where queries', () => {
+        test('should cache identical where queries across operations, without passing data (2 DB calls total)', async ({
+          payload,
+        }) => {
+          const doc = await payload.create({
+            collection: whereCacheSameSlug,
+            data: {
+              title: 'Test Document',
+              userRole: 'admin',
+            },
+            overrideAccess: true,
+          })
+
+          const consoleCount = vitest.spyOn(console, 'log').mockImplementation(() => {})
+
+          // Get permissions - all operations return same where query
+          const permissions = await getEntityPermissions({
+            id: doc.id,
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheSameSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: true,
+            req,
+          })
+
+          // 1 db call across all operations due to cache, + 1 for the document fetch
+          expect(consoleCount).toHaveBeenCalledTimes(2)
+
+          consoleCount.mockRestore()
+
+          expect(permissions).toEqual({
+            fields: {
+              title: { read: { permission: true }, update: { permission: true } },
+              userRole: { read: { permission: true }, update: { permission: true } },
+              updatedAt: { read: { permission: true }, update: { permission: true } },
+              createdAt: { read: { permission: true }, update: { permission: true } },
+              createdBy: { read: { permission: true }, update: { permission: false } },
+              updatedBy: { read: { permission: true }, update: { permission: false } },
+            },
+            read: { permission: true, where: { userRole: { equals: 'admin' } } },
+            update: { permission: true, where: { userRole: { equals: 'admin' } } },
+            delete: { permission: true, where: { userRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+
+        test('should cache identical where queries across operations, with passing data (1 DB call total)', async ({
+          payload,
+        }) => {
+          const doc = await payload.create({
+            collection: whereCacheSameSlug,
+            data: {
+              title: 'Test Document',
+              userRole: 'noAccess',
+            },
+            overrideAccess: true,
+          })
+
+          const consoleCount = vitest.spyOn(console, 'log').mockImplementation(() => {})
+
+          // Get permissions - all operations return same where query
+          const permissions = await getEntityPermissions({
+            id: doc.id,
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheSameSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: true,
+            req,
+            data: doc,
+          })
+
+          // 1 db call across all operations due to cache
+          expect(consoleCount).toHaveBeenCalledTimes(1)
+
+          consoleCount.mockRestore()
+
+          expect(permissions).toEqual({
+            fields: {
+              title: { read: { permission: false }, update: { permission: false } },
+              userRole: { read: { permission: false }, update: { permission: false } },
+              updatedAt: { read: { permission: false }, update: { permission: false } },
+              createdAt: { read: { permission: false }, update: { permission: false } },
+              createdBy: { read: { permission: false }, update: { permission: false } },
+              updatedBy: { read: { permission: false }, update: { permission: false } },
+            },
+            read: { permission: false, where: { userRole: { equals: 'admin' } } },
+            update: { permission: false, where: { userRole: { equals: 'admin' } } },
+            delete: { permission: false, where: { userRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+      })
+
+      test.describe('where query cache - unique where queries', () => {
+        test('should handle unique where queries per operation (1 DB call per operation)', async ({
+          payload,
+        }) => {
+          const doc = await payload.create({
+            collection: whereCacheUniqueSlug,
+            data: {
+              title: 'Test Document',
+              readRole: 'admin',
+              updateRole: 'noAccess',
+              deleteRole: 'admin',
+            },
+            overrideAccess: true,
+          })
+
+          const consoleCount = vitest.spyOn(console, 'log').mockImplementation(() => {})
+
+          // Get permissions - each operation returns unique where query
+          const permissions = await getEntityPermissions({
+            id: doc.id,
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheUniqueSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: true,
+            req,
+          })
+
+          // 3 access control operations with unique where + 1 for the document fetch, since we're not passing data.
+          expect(consoleCount).toHaveBeenCalledTimes(4)
+          consoleCount.mockRestore()
+
+          expect(permissions).toEqual({
+            fields: {
+              title: { read: { permission: true }, update: { permission: false } },
+              readRole: { read: { permission: true }, update: { permission: false } },
+              updateRole: { read: { permission: true }, update: { permission: false } },
+              deleteRole: { read: { permission: true }, update: { permission: false } },
+              updatedAt: { read: { permission: true }, update: { permission: false } },
+              createdAt: { read: { permission: true }, update: { permission: false } },
+              createdBy: { read: { permission: true }, update: { permission: false } },
+              updatedBy: { read: { permission: true }, update: { permission: false } },
+            },
+            read: { permission: true, where: { readRole: { equals: 'admin' } } },
+            update: { permission: false, where: { updateRole: { equals: 'admin' } } },
+            delete: { permission: true, where: { deleteRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+
+        test('should handle unique where queries per operation (1 DB call per operation), no data fetch when passing data', async ({
+          payload,
+        }) => {
+          const doc = await payload.create({
+            collection: whereCacheUniqueSlug,
+            data: {
+              title: 'Test Document',
+              readRole: 'admin',
+              updateRole: 'noAccess',
+              deleteRole: 'admin',
+            },
+            overrideAccess: true,
+          })
+
+          const consoleCount = vitest.spyOn(console, 'log').mockImplementation(() => {})
+
+          // Get permissions - each operation returns unique where query
+          const permissions = await getEntityPermissions({
+            id: doc.id,
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheUniqueSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: true,
+            req,
+            data: doc,
+          })
+
+          // 3 access control operations with unique where, no data fetch since we're passing data
+          expect(consoleCount).toHaveBeenCalledTimes(3)
+          consoleCount.mockRestore()
+
+          expect(permissions).toEqual({
+            fields: {
+              title: { read: { permission: true }, update: { permission: false } },
+              readRole: { read: { permission: true }, update: { permission: false } },
+              updateRole: { read: { permission: true }, update: { permission: false } },
+              deleteRole: { read: { permission: true }, update: { permission: false } },
+              updatedAt: { read: { permission: true }, update: { permission: false } },
+              createdAt: { read: { permission: true }, update: { permission: false } },
+              createdBy: { read: { permission: true }, update: { permission: false } },
+              updatedBy: { read: { permission: true }, update: { permission: false } },
+            },
+            read: { permission: true, where: { readRole: { equals: 'admin' } } },
+            update: { permission: false, where: { updateRole: { equals: 'admin' } } },
+            delete: { permission: true, where: { deleteRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+
+        test('should return correct permissions with mixed results', async ({ payload }) => {
+          const doc = await payload.create({
+            collection: whereCacheUniqueSlug,
+            data: {
+              title: 'Test Document 2',
+              readRole: 'noAccess',
+              updateRole: 'admin',
+              deleteRole: 'noAccess',
+            },
+            overrideAccess: true,
+          })
+
+          const permissions = await getEntityPermissions({
+            id: doc.id,
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheUniqueSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: true,
+            req,
+          })
+
+          expect(permissions).toEqual({
+            fields: {
+              title: { read: { permission: false }, update: { permission: true } },
+              readRole: { read: { permission: false }, update: { permission: true } },
+              updateRole: { read: { permission: false }, update: { permission: true } },
+              deleteRole: { read: { permission: false }, update: { permission: true } },
+              updatedAt: { read: { permission: false }, update: { permission: true } },
+              createdAt: { read: { permission: false }, update: { permission: true } },
+              createdBy: { read: { permission: false }, update: { permission: false } },
+              updatedBy: { read: { permission: false }, update: { permission: false } },
+            },
+            read: { permission: false, where: { readRole: { equals: 'admin' } } },
+            delete: { permission: false, where: { deleteRole: { equals: 'admin' } } },
+            update: { permission: true, where: { updateRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+
+        test('ensure no db calls when fetchData is false', async ({ payload }) => {
+          const _doc = await payload.create({
+            collection: whereCacheUniqueSlug,
+            data: {
+              title: 'Test Document',
+              readRole: 'admin',
+              updateRole: 'noAccess',
+              deleteRole: 'admin',
+            },
+            overrideAccess: true,
+          })
+
+          const consoleCount = vitest.spyOn(console, 'log').mockImplementation(() => {})
+
+          // Get permissions - each operation returns unique where query
+          const permissions = await getEntityPermissions({
+            blockReferencesPermissions: {} as any,
+            entity: payload.collections[whereCacheUniqueSlug].config,
+            entityType: 'collection',
+            operations: ['read', 'update', 'delete'],
+            fetchData: false,
+            req,
+          })
+
+          expect(consoleCount).toHaveBeenCalledTimes(0)
+          consoleCount.mockRestore()
+
+          expect(permissions).toEqual({
+            // TODO: Permissions currently default to true when fetchData is false, this should be changed to false in 4.0.
+            fields: {
+              title: { read: { permission: true }, update: { permission: true } },
+              readRole: { read: { permission: true }, update: { permission: true } },
+              updateRole: { read: { permission: true }, update: { permission: true } },
+              deleteRole: { read: { permission: true }, update: { permission: true } },
+              updatedAt: { read: { permission: true }, update: { permission: true } },
+              createdAt: { read: { permission: true }, update: { permission: true } },
+              createdBy: { read: { permission: true }, update: { permission: false } },
+              updatedBy: { read: { permission: true }, update: { permission: false } },
+            },
+            read: { permission: true, where: { readRole: { equals: 'admin' } } },
+            update: { permission: true, where: { updateRole: { equals: 'admin' } } },
+            delete: { permission: true, where: { deleteRole: { equals: 'admin' } } },
+          } satisfies CollectionPermission)
+        })
+      })
+    })
+  },
+)

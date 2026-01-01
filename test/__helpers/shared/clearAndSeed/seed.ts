@@ -1,0 +1,205 @@
+import fs from 'fs'
+import * as os from 'node:os'
+import path from 'path'
+import { type Payload } from 'payload'
+
+import type { SeedFunction } from './testDataConfig.js'
+
+import { isErrorWithCode } from '../isErrorWithCode.js'
+import { resetDB } from './reset.js'
+import { createSnapshot, dbSnapshot, restoreFromSnapshot, uploadsDirCache } from './snapshot.js'
+
+export async function seedDB({
+  _payload,
+  collectionSlugs,
+  seedFunction,
+  snapshotKey,
+  uploadsDir,
+  /**
+   * Always seeds, instead of restoring from snapshot for consecutive test runs
+   */
+  alwaysSeed = false,
+  deleteOnly,
+}: {
+  _payload: Payload
+  alwaysSeed?: boolean
+  collectionSlugs: string[]
+  deleteOnly?: boolean
+  seedFunction?: SeedFunction
+  /**
+   * Key to uniquely identify the kind of snapshot. Each test suite should pass in a unique key
+   */
+  snapshotKey: string
+  uploadsDir?: string | string[]
+}) {
+  const invalidateSnapshot = () => {
+    delete dbSnapshot[snapshotKey]
+    delete uploadsDirCache[snapshotKey]
+  }
+
+  const resetDatabase = async (): Promise<boolean> => {
+    try {
+      await resetDB(_payload, collectionSlugs)
+      return false
+    } catch (initialResetError) {
+      // Some database integration tests intentionally mutate or drop their schema.
+      // Reinitialize it once and retry so the next test still starts from a known-clean state.
+      if (!('drizzle' in _payload.db)) {
+        throw initialResetError
+      }
+
+      const previousForcePush = process.env.PAYLOAD_FORCE_DRIZZLE_PUSH
+      process.env.PAYLOAD_FORCE_DRIZZLE_PUSH = 'true'
+
+      try {
+        await _payload.db.init()
+        await _payload.db.connect()
+      } finally {
+        if (previousForcePush === undefined) {
+          delete process.env.PAYLOAD_FORCE_DRIZZLE_PUSH
+        } else {
+          process.env.PAYLOAD_FORCE_DRIZZLE_PUSH = previousForcePush
+        }
+      }
+
+      await resetDB(_payload, collectionSlugs)
+      return true
+    }
+  }
+
+  /**
+   * Reset database
+   */
+  if (await resetDatabase()) {
+    invalidateSnapshot()
+  }
+  /**
+   * Delete uploads directory if it exists
+   */
+  if (uploadsDir) {
+    const uploadsDirs = Array.isArray(uploadsDir) ? uploadsDir : [uploadsDir]
+    for (const dir of uploadsDirs) {
+      try {
+        await fs.promises.access(dir)
+        const files = await fs.promises.readdir(dir)
+        for (const file of files) {
+          const filePath = path.join(dir, file)
+          await fs.promises.rm(filePath, { force: true, recursive: true })
+        }
+      } catch (error) {
+        if (isErrorWithCode(error, 'ENOENT')) {
+          // Directory does not exist - that's okay, skip it
+          continue
+        } else {
+          // Some other error occurred - rethrow it
+          console.error('Error in operation (deleting uploads dir):', dir, error)
+          throw error
+        }
+      }
+    }
+  }
+
+  /**
+   * Mongoose & Postgres: Restore snapshot of old data if available
+   *
+   * Note for postgres: For postgres, this needs to happen AFTER the tables were created.
+   * The reset preserves the schema so the cached rows can be restored without rebuilding it.
+   */
+  let restored = false
+  if (
+    !alwaysSeed &&
+    dbSnapshot[snapshotKey] &&
+    Object.keys(dbSnapshot[snapshotKey]).length &&
+    !deleteOnly
+  ) {
+    try {
+      await restoreFromSnapshot(_payload, snapshotKey, collectionSlugs)
+
+      /**
+       * Restore uploads dir if it exists
+       */
+      if (uploadsDirCache[snapshotKey]) {
+        for (const cache of uploadsDirCache[snapshotKey]) {
+          if (cache.originalDir && fs.existsSync(cache.cacheDir)) {
+            fs.cpSync(cache.cacheDir, cache.originalDir, { recursive: true })
+          }
+        }
+      }
+
+      restored = true
+    } catch {
+      // Snapshots are only a test-speed optimization. If a test changed the schema or adapter
+      // state, discard the stale cache and rebuild the canonical state with the seed function.
+      invalidateSnapshot()
+      await resetDatabase()
+    }
+  }
+
+  /**
+   * If a snapshot was restored, we don't need to seed the database
+   */
+  if (restored || deleteOnly) {
+    return
+  }
+
+  /**
+   * Seed the database with data and save it to a snapshot
+   **/
+  if (typeof seedFunction === 'function') {
+    await seedFunction(_payload)
+  }
+
+  if (!alwaysSeed) {
+    await createSnapshot(_payload, snapshotKey, collectionSlugs)
+  }
+
+  /**
+   * Cache uploads dir to a cache folder if uploadsDir exists
+   */
+  if (!alwaysSeed && uploadsDir) {
+    const uploadsDirs = Array.isArray(uploadsDir) ? uploadsDir : [uploadsDir]
+    for (const dir of uploadsDirs) {
+      if (dir && fs.existsSync(dir)) {
+        if (!uploadsDirCache[snapshotKey]) {
+          uploadsDirCache[snapshotKey] = []
+        }
+        let newObj: {
+          cacheDir: string
+          originalDir: string
+        } | null = null
+        if (!uploadsDirCache[snapshotKey].find((cache) => cache.originalDir === dir)) {
+          // Define new cache folder path to the OS temp directory (well a random folder inside it)
+          // Use a sanitized version of the original path to make the cache dir unique per upload dir
+          const sanitizedPath = dir.replace(/[^a-z0-9]/gi, '_')
+          newObj = {
+            cacheDir: path.join(
+              os.tmpdir(),
+              `${snapshotKey}`,
+              `payload-e2e-tests-uploads-cache`,
+              sanitizedPath,
+            ),
+            originalDir: dir,
+          }
+        }
+        if (!newObj) {
+          continue
+        }
+
+        // delete the cache folder if it exists
+        if (fs.existsSync(newObj.cacheDir)) {
+          await fs.promises.rm(newObj.cacheDir, { recursive: true })
+        }
+        await fs.promises.mkdir(newObj.cacheDir, { recursive: true })
+        // recursively move all files and directories from uploadsDir to uploadsDirCacheFolder
+
+        try {
+          fs.cpSync(newObj.originalDir, newObj.cacheDir, { recursive: true })
+          uploadsDirCache[snapshotKey].push(newObj)
+        } catch (e) {
+          console.error('Error in operation (creating snapshot of uploads dir):', e)
+          throw e
+        }
+      }
+    }
+  }
+}

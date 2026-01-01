@@ -1,0 +1,129 @@
+'use client'
+
+import type { SaveDraftButtonClientProps } from 'payload'
+
+import { formatAdminURL } from 'payload/shared'
+import * as qs from 'qs-esm'
+import React, { useCallback, useRef } from 'react'
+
+import { useForm, useFormModified } from '../../forms/Form/context.js'
+import { FormSubmit } from '../../forms/Submit/index.js'
+import { useHotkey } from '../../hooks/useHotkey.js'
+import { useConfig } from '../../providers/Config/index.js'
+import { useDocumentInfo } from '../../providers/DocumentInfo/index.js'
+import { useEditDepth } from '../../providers/EditDepth/index.js'
+import { useLocale } from '../../providers/Locale/index.js'
+import { useOperation } from '../../providers/Operation/index.js'
+import { useTranslation } from '../../providers/Translation/index.js'
+import { useUploadEdits } from '../../providers/UploadEdits/index.js'
+
+const baseClass = 'save-draft'
+
+export function SaveDraftButton(props: SaveDraftButtonClientProps) {
+  const {
+    config: {
+      routes: { api },
+    },
+  } = useConfig()
+
+  const { id, collectionSlug, globalSlug, setUnpublishedVersionCount, uploadStatus } =
+    useDocumentInfo()
+
+  const modified = useFormModified()
+  const currentLocale = useLocale()
+  const locale = currentLocale?.code
+  const ref = useRef<HTMLButtonElement>(null)
+  const editDepth = useEditDepth()
+  const { t } = useTranslation()
+  const { submit } = useForm()
+  const { uploadEdits } = useUploadEdits()
+  const operation = useOperation()
+
+  const disabled = (operation === 'update' && !modified) || uploadStatus === 'uploading'
+
+  const saveDraft = useCallback(async () => {
+    if (disabled) {
+      return
+    }
+
+    const search = qs.stringify(
+      {
+        depth: 0,
+        draft: true,
+        'fallback-locale': 'null',
+        locale,
+        uploadEdits: uploadEdits || undefined,
+      },
+      { addQueryPrefix: true },
+    )
+    let action
+    let method = 'POST'
+
+    if (collectionSlug) {
+      action = formatAdminURL({
+        apiRoute: api,
+        path: `/${collectionSlug}${id ? `/${id}` : ''}${search}`,
+      })
+      if (id) {
+        method = 'PATCH'
+      }
+    }
+
+    if (globalSlug) {
+      action = formatAdminURL({
+        apiRoute: api,
+        path: `/globals/${globalSlug}${search}`,
+      })
+    }
+
+    await submit({
+      action,
+      method,
+      overrides: {
+        _status: 'draft',
+      },
+      skipValidation: true,
+    })
+
+    setUnpublishedVersionCount((count) => count + 1)
+  }, [
+    submit,
+    collectionSlug,
+    globalSlug,
+    api,
+    locale,
+    id,
+    disabled,
+    setUnpublishedVersionCount,
+    uploadEdits,
+  ])
+
+  useHotkey({ cmdCtrlKey: true, editDepth, keyCodes: ['s'] }, (e) => {
+    if (disabled) {
+      // absorb the event
+    }
+
+    e.preventDefault()
+    e.stopPropagation()
+    if (ref?.current) {
+      ref.current.click()
+    }
+  })
+
+  return (
+    <FormSubmit
+      buttonId="action-save-draft"
+      buttonStyle="secondary"
+      className={baseClass}
+      disabled={disabled}
+      onClick={() => {
+        return void saveDraft()
+      }}
+      ref={ref}
+      size="medium"
+      type="button"
+    >
+      {t('version:saveDraft')}
+    </FormSubmit>
+  )
+}

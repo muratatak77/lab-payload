@@ -1,0 +1,7317 @@
+import type { MongooseAdapter } from '@payloadcms/db-mongodb'
+import type { IndexDirection, IndexOptions } from 'mongoose'
+import type { ValidationError } from 'payload'
+
+import { slugifyHandler } from '@payloadcms/ui/utilities/slugify'
+import { createPayloadRequest, reload } from 'payload'
+import { fileURLToPath } from 'url'
+import { expect } from 'vitest'
+
+import type { BlockField, GroupField } from './payload-types.js'
+
+import { test } from '../__helpers/int/vitest.js'
+import { devUser } from '../credentials.js'
+import { arrayDefaultValue } from './collections/Array/index.js'
+import { blocksDoc } from './collections/Blocks/shared.js'
+import { dateDoc } from './collections/Date/shared.js'
+import { groupDefaultChild, groupDefaultValue } from './collections/Group/index.js'
+import { namedGroupDoc } from './collections/Group/shared.js'
+import { defaultNumber } from './collections/Number/index.js'
+import { numberDoc } from './collections/Number/shared.js'
+import { pointDoc } from './collections/Point/shared.js'
+import {
+  localizedTextValue,
+  namedTabDefaultValue,
+  namedTabText,
+} from './collections/Tabs/constants.js'
+import { tabsDoc } from './collections/Tabs/shared.js'
+import { defaultText } from './collections/Text/shared.js'
+import {
+  arrayFieldsSlug,
+  blockFieldsSlug,
+  checkboxFieldsSlug,
+  collapsibleFieldsSlug,
+  customIDNestedSlug,
+  dateFieldsSlug,
+  duplicateFieldsSlug,
+  groupFieldsSlug,
+  numberFieldsSlug,
+  relationshipFieldsSlug,
+  tabsFieldsSlug,
+  textFieldsSlug,
+} from './slugs.js'
+
+let user: any
+
+test.suite('Fields', { config: './config.ts', resetBetweenTests: false }, () => {
+  test.beforeAll(async ({ payloadInstance: payload, restClientInstance: restClient }) => {
+    await restClient.login({
+      slug: 'users',
+      credentials: devUser,
+    })
+    user = await payload.login({
+      collection: 'users',
+      data: {
+        email: devUser.email,
+        password: devUser.password,
+      },
+      overrideAccess: true,
+    })
+  })
+
+  test.describe('slug field', () => {
+    const created: (number | string)[] = []
+
+    test.afterEach(async ({ payload }) => {
+      for (const id of created) {
+        await payload.delete({ collection: 'slug-fields', id, overrideAccess: true })
+      }
+      created.length = 0
+    })
+
+    test('should generate a slug from the source field on create', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'My First Post' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.slug).toBe('my-first-post')
+    })
+
+    test('should keep a user-provided slug on create', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'My First Post', slug: 'custom-slug' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.slug).toBe('custom-slug')
+    })
+
+    test('should slugify an unnormalized explicit value', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'My First Post', slug: 'Hello World' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.slug).toBe('hello-world')
+    })
+
+    test('should freeze a diverged slug on update', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Original Title' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+
+      const updated = await payload.update({
+        collection: 'slug-fields',
+        id: doc.id,
+        data: { title: 'Changed Title', slug: 'manual-value' },
+        overrideAccess: true,
+      })
+      expect(updated.slug).toBe('manual-value')
+
+      const again = await payload.update({
+        collection: 'slug-fields',
+        id: doc.id,
+        data: { title: 'Changed Title Again' },
+        overrideAccess: true,
+      })
+      expect(again.slug).toBe('manual-value')
+    })
+
+    test('should fill every locale of a localized slug on create', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Title', localizedTitle: 'English Title' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.localizedSlug).toBe('english-title')
+
+      // The other locale is seeded on create so switching locales never lands on an empty slug —
+      // with no source of its own it takes a `<singular>-N` fallback.
+      const allLocales = await payload.findByID({
+        collection: 'slug-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const localizedSlug = allLocales.localizedSlug as unknown as Record<string, string>
+      expect(localizedSlug.en).toBe('english-title')
+      expect(localizedSlug.es).toMatch(/^slug-field-\d+$/)
+    })
+
+    test('should derive every locale of a localized slug from a shared non-localized source', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Hello World' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+
+      // `title` is not localized, so its value applies to every locale — each derives `hello-world`
+      // rather than falling back to the counter.
+      const allLocales = await payload.findByID({
+        collection: 'slug-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const shared = allLocales.localizedSharedSlug as unknown as Record<string, string>
+      expect(shared.en).toBe('hello-world')
+      expect(shared.es).toBe('hello-world')
+    })
+
+    test('should keep localized slugs independent when one locale is changed', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Title', localizedTitle: 'English Title' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+
+      // Changing one locale's slug leaves the others untouched (a slug is static once set).
+      await payload.update({
+        collection: 'slug-fields',
+        id: doc.id,
+        data: { localizedSlug: 'titulo-espanol' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+
+      const allLocales = await payload.findByID({
+        collection: 'slug-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const localizedSlug = allLocales.localizedSlug as unknown as Record<string, string>
+      expect(localizedSlug.en).toBe('english-title')
+      expect(localizedSlug.es).toBe('titulo-espanol')
+    })
+
+    test('should fall back to <singular>-N for a slug field with no useAsSlug source', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'No Source' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.sourcelessSlug).toMatch(/^slug-field-\d+$/)
+    })
+
+    test('should keep an explicit value on a slug field with no useAsSlug source', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'No Source', sourcelessSlug: 'Manual Value' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.sourcelessSlug).toBe('manual-value')
+    })
+
+    test('should allow the same localized slug value in different locales', async ({ payload }) => {
+      const en = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Title', localizedSlug: 'shared' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(en.id)
+      expect(en.localizedSlug).toBe('shared')
+
+      const es = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Titulo', localizedSlug: 'shared' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(es.id)
+      expect(es.localizedSlug).toBe('shared')
+    })
+
+    test('should allow one document to reuse the same slug across its own locales', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Title', localizedSlug: 'shared-across-self' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.localizedSlug).toBe('shared-across-self')
+
+      const es = await payload.update({
+        collection: 'slug-fields',
+        id: doc.id,
+        data: { localizedSlug: 'shared-across-self' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      expect(es.localizedSlug).toBe('shared-across-self')
+
+      const allLocales = await payload.findByID({
+        collection: 'slug-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const localizedSlug = allLocales.localizedSlug as unknown as Record<string, string>
+      expect(localizedSlug.en).toBe('shared-across-self')
+      expect(localizedSlug.es).toBe('shared-across-self')
+    })
+
+    test('should reject a localized slug that collides within the same locale', async ({
+      payload,
+    }) => {
+      const first = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'First', localizedSlug: 'shared-localized' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(first.id)
+      expect(first.localizedSlug).toBe('shared-localized')
+
+      await expect(
+        payload.create({
+          collection: 'slug-fields',
+          data: { title: 'Second', localizedSlug: 'shared-localized' },
+          locale: 'es',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow()
+    })
+
+    test('should scope localized uniqueness per locale across documents', async ({ payload }) => {
+      // Doc A: en `my-slug`, es `my-slugo`.
+      const a = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'A', localizedSlug: 'my-slug' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(a.id)
+      await payload.update({
+        collection: 'slug-fields',
+        id: a.id,
+        data: { localizedSlug: 'my-slugo' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+
+      // Doc B may take `my-slug` in es — it matches A's en value, but the es namespace is free.
+      const b = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'B', localizedSlug: 'my-slug' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(b.id)
+
+      const aLocales = (
+        await payload.findByID({
+          collection: 'slug-fields',
+          id: a.id,
+          locale: 'all',
+          overrideAccess: true,
+        })
+      ).localizedSlug as unknown as Record<string, string>
+      const bLocales = (
+        await payload.findByID({
+          collection: 'slug-fields',
+          id: b.id,
+          locale: 'all',
+          overrideAccess: true,
+        })
+      ).localizedSlug as unknown as Record<string, string>
+      expect(aLocales.en).toBe('my-slug')
+      expect(aLocales.es).toBe('my-slugo')
+      expect(bLocales.es).toBe('my-slug')
+
+      // But B cannot take `my-slugo` in es — that collides with A within the es namespace.
+      await expect(
+        payload.create({
+          collection: 'slug-fields',
+          data: { title: 'C', localizedSlug: 'my-slugo' },
+          locale: 'es',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow()
+    })
+
+    test('should auto-increment a derived localized slug that collides within the same locale', async ({
+      payload,
+    }) => {
+      const first = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'First', localizedTitle: 'Shared Derived' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(first.id)
+      expect(first.localizedSlug).toBe('shared-derived')
+
+      const second = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Second', localizedTitle: 'Shared Derived' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(second.id)
+      expect(second.localizedSlug).toBe('shared-derived-1')
+    })
+
+    test('should not increment a derived localized slug shared across different locales', async ({
+      payload,
+    }) => {
+      const en = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'English', localizedTitle: 'Cross Locale' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(en.id)
+      expect(en.localizedSlug).toBe('cross-locale')
+
+      const es = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Spanish', localizedTitle: 'Cross Locale' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(es.id)
+      expect(es.localizedSlug).toBe('cross-locale')
+    })
+
+    test('should give a duplicate a fresh fallback slug instead of drifting from the original', async ({
+      payload,
+    }) => {
+      const original = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'My First Post' },
+        overrideAccess: true,
+      })
+      created.push(original.id)
+      expect(original.slug).toBe('my-first-post')
+
+      const duplicate = await payload.duplicate({
+        collection: 'slug-fields',
+        id: original.id,
+        overrideAccess: true,
+      })
+      created.push(duplicate.id)
+
+      // The copy takes a fresh `<singular>-N` fallback, not `my-first-post-1`.
+      expect(duplicate.slug).toBe('slug-field-1')
+
+      const secondDuplicate = await payload.duplicate({
+        collection: 'slug-fields',
+        id: original.id,
+        overrideAccess: true,
+      })
+      created.push(secondDuplicate.id)
+      expect(secondDuplicate.slug).toBe('slug-field-2')
+    })
+
+    test('should derive from the source when an explicit value slugifies to nothing', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Fallthrough Title', slug: '!!!' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.slug).toBe('fallthrough-title')
+    })
+
+    test('should reject a slug that collides with another document', async ({ payload }) => {
+      const first = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'First', slug: 'shared-slug' },
+        overrideAccess: true,
+      })
+      created.push(first.id)
+      expect(first.slug).toBe('shared-slug')
+
+      await expect(
+        payload.create({
+          collection: 'slug-fields',
+          data: { title: 'Second', slug: 'shared-slug' },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow()
+    })
+
+    test('should reject updating a slug to collide with another document', async ({ payload }) => {
+      const a = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Doc A', slug: 'doc-a' },
+        overrideAccess: true,
+      })
+      created.push(a.id)
+      const b = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Doc B', slug: 'doc-b' },
+        overrideAccess: true,
+      })
+      created.push(b.id)
+
+      await expect(
+        payload.update({
+          collection: 'slug-fields',
+          id: b.id,
+          data: { slug: 'doc-a' },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow()
+    })
+
+    test('should allow re-saving a document with its own unchanged slug', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Stable', slug: 'stable-slug' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+
+      // Autosave resends the current slug on every tick — re-saving the same value must not trip the
+      // collision check against the document itself.
+      const updated = await payload.update({
+        collection: 'slug-fields',
+        id: doc.id,
+        data: { slug: 'stable-slug' },
+        overrideAccess: true,
+      })
+      expect(updated.slug).toBe('stable-slug')
+    })
+
+    // The regen button calls the slugify server function directly, which has its own fallback path
+    // separate from the beforeChange hook. It must scope the source-less `<singular>-N` fallback to
+    // the active locale, or it hands back a slug already taken in that locale.
+    test('should regenerate a source-less localized slug to a locale-unique fallback', async ({
+      payload,
+    }) => {
+      const taken = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Taken' },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      created.push(taken.id)
+      const takenSlug = taken.localizedSlug as string
+      expect(takenSlug).toMatch(/^slug-field-\d+$/)
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+
+      const regenerated = await slugifyHandler({
+        collectionSlug: 'slug-fields',
+        data: {},
+        locale: 'es',
+        path: 'localizedSlug',
+        req,
+        valueToSlugify: '',
+      })
+
+      expect(regenerated).toMatch(/^slug-field-\d+$/)
+      expect(regenerated).not.toBe(takenSlug)
+    })
+
+    test('should dedupe a source-derived slug on regenerate, matching the next save', async ({
+      payload,
+    }) => {
+      const first = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Shared Regen' },
+        overrideAccess: true,
+      })
+      created.push(first.id)
+      expect(first.slug).toBe('shared-regen')
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+
+      // Regenerating from a source that slugifies to a taken slug must bump it, not hand back the
+      // duplicate — otherwise the next save throws a uniqueness error.
+      const regenerated = await slugifyHandler({
+        collectionSlug: 'slug-fields',
+        data: {},
+        path: 'slug',
+        req,
+        valueToSlugify: 'Shared Regen',
+      })
+
+      expect(regenerated).toBe('shared-regen-1')
+    })
+
+    test('should let a document reuse its own slug on regenerate via the excluded id', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'slug-fields',
+        data: { title: 'Own Slug' },
+        overrideAccess: true,
+      })
+      created.push(doc.id)
+      expect(doc.slug).toBe('own-slug')
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+
+      // Excluding the current doc means regenerating its own unchanged source reuses the value rather
+      // than bumping past test.
+      const regenerated = await slugifyHandler({
+        id: doc.id,
+        collectionSlug: 'slug-fields',
+        data: {},
+        path: 'slug',
+        req,
+        valueToSlugify: 'Own Slug',
+      })
+
+      expect(regenerated).toBe('own-slug')
+    })
+
+    test.describe('autosave drafts', () => {
+      const created: (number | string)[] = []
+
+      test.afterEach(async ({ payload }) => {
+        for (const id of created) {
+          await payload.delete({ collection: 'slug-autosave', id, overrideAccess: true })
+        }
+        created.length = 0
+      })
+
+      test('should generate the slug from the source on a draft create', async ({ payload }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Draft One' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('draft-one')
+      })
+
+      test('should fall back to <singular>-N when a draft is created with no source', async ({
+        payload,
+      }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('slug-autosave-1')
+
+        // The admin reads the latest draft version, not the create response, so the fallback must
+        // be persisted there too.
+        const latestDraft = await payload.findByID({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          overrideAccess: true,
+        })
+        expect(latestDraft.slug).toBe('slug-autosave-1')
+      })
+
+      test('should fall back when the explicit value slugifies to nothing and there is no source', async ({
+        payload,
+      }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { slug: '!!!' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('slug-autosave-1')
+      })
+
+      test('should give each source-less draft the next fallback without colliding', async ({
+        payload,
+      }) => {
+        const first = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          overrideAccess: true,
+        })
+        created.push(first.id)
+
+        const second = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          overrideAccess: true,
+        })
+        created.push(second.id)
+
+        expect(first.slug).toBe('slug-autosave-1')
+        expect(second.slug).toBe('slug-autosave-2')
+      })
+
+      test('should reject a draft slug that collides with another draft', async ({ payload }) => {
+        const first = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'First', slug: 'shared-draft-slug' },
+          overrideAccess: true,
+        })
+        created.push(first.id)
+        expect(first.slug).toBe('shared-draft-slug')
+
+        await expect(
+          payload.create({
+            collection: 'slug-autosave',
+            draft: true,
+            data: { title: 'Second', slug: 'shared-draft-slug' },
+            overrideAccess: true,
+          }),
+        ).rejects.toThrow()
+      })
+
+      test('should reject updating a draft slug to collide with another draft', async ({
+        payload,
+      }) => {
+        const a = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'A', slug: 'draft-a' },
+          overrideAccess: true,
+        })
+        created.push(a.id)
+        const b = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'B', slug: 'draft-b' },
+          overrideAccess: true,
+        })
+        created.push(b.id)
+
+        await expect(
+          payload.update({
+            collection: 'slug-autosave',
+            id: b.id,
+            draft: true,
+            data: { slug: 'draft-a' },
+            overrideAccess: true,
+          }),
+        ).rejects.toThrow()
+      })
+
+      test('should allow the same localized draft slug across locales but reject within a locale', async ({
+        payload,
+      }) => {
+        const en = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { localizedTitle: 'One', localizedSlug: 'shared-draft-localized' },
+          locale: 'en',
+          overrideAccess: true,
+        })
+        created.push(en.id)
+        expect(en.localizedSlug).toBe('shared-draft-localized')
+
+        // Same value in a different locale is fine — uniqueness is per-locale.
+        const es = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { localizedTitle: 'Uno', localizedSlug: 'shared-draft-localized' },
+          locale: 'es',
+          overrideAccess: true,
+        })
+        created.push(es.id)
+        expect(es.localizedSlug).toBe('shared-draft-localized')
+
+        // Same value in the same locale collides.
+        await expect(
+          payload.create({
+            collection: 'slug-autosave',
+            draft: true,
+            data: { localizedTitle: 'Two', localizedSlug: 'shared-draft-localized' },
+            locale: 'en',
+            overrideAccess: true,
+          }),
+        ).rejects.toThrow()
+      })
+
+      test('should fall back to <singular>-N for a source-less localized slug on a draft', async ({
+        payload,
+      }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          locale: 'en',
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.localizedSlug).toBe('slug-autosave-1')
+
+        // The fallback must persist to the draft version the admin reads back, and survive publish.
+        const latestDraft = await payload.findByID({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          locale: 'en',
+          overrideAccess: true,
+        })
+        expect(latestDraft.localizedSlug).toBe('slug-autosave-1')
+
+        const published = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          data: { _status: 'published' },
+          locale: 'en',
+          overrideAccess: true,
+        })
+        expect(published.localizedSlug).toBe('slug-autosave-1')
+      })
+
+      test('should fill every locale of a localized slug on a draft create', async ({
+        payload,
+      }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          locale: 'en',
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+
+        const allLocales = await payload.findByID({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          locale: 'all',
+          overrideAccess: true,
+        })
+        const localizedSlug = allLocales.localizedSlug as unknown as Record<string, string>
+        expect(localizedSlug.en).toMatch(/^slug-autosave-\d+$/)
+        expect(localizedSlug.es).toMatch(/^slug-autosave-\d+$/)
+      })
+
+      test('should fall back to a per-locale <singular>-N for localized slugs on a draft', async ({
+        payload,
+      }) => {
+        const en = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: {},
+          locale: 'en',
+          overrideAccess: true,
+        })
+        created.push(en.id)
+        expect(en.localizedSlug).toBe('slug-autosave-1')
+
+        // A different locale falls back independently — the counter is scoped per-locale.
+        const es = await payload.update({
+          collection: 'slug-autosave',
+          id: en.id,
+          draft: true,
+          data: {},
+          locale: 'es',
+          overrideAccess: true,
+        })
+        expect(es.localizedSlug).toBe('slug-autosave-1')
+      })
+
+      test('should give a duplicated draft its own unique slug', async ({ payload }) => {
+        const original = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Dup Me', slug: 'dup-me' },
+          overrideAccess: true,
+        })
+        created.push(original.id)
+        expect(original.slug).toBe('dup-me')
+
+        const duplicate = await payload.duplicate({
+          collection: 'slug-autosave',
+          id: original.id,
+          overrideAccess: true,
+        })
+        created.push(duplicate.id)
+
+        expect(duplicate.slug).not.toBe('dup-me')
+        expect(duplicate.slug).toMatch(/^slug-autosave-\d+$/)
+      })
+
+      test('should keep an explicit slug the user typed on the initial draft', async ({
+        payload,
+      }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Draft One', slug: 'user-typed' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('user-typed')
+      })
+
+      test('should freeze the slug across subsequent autosaves once set', async ({ payload }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Draft One' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('draft-one')
+
+        const updated = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          data: { title: 'Draft One Updated' },
+          overrideAccess: true,
+        })
+        expect(updated.slug).toBe('draft-one')
+      })
+
+      test('should keep an admin overwrite across subsequent autosaves', async ({ payload }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Draft One' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+
+        await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          data: { title: 'Draft Two' },
+          overrideAccess: true,
+        })
+
+        const overwritten = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          data: { slug: 'human-chosen-slug' },
+          overrideAccess: true,
+        })
+        expect(overwritten.slug).toBe('human-chosen-slug')
+
+        const afterMoreEdits = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          data: { title: 'Draft Three' },
+          overrideAccess: true,
+        })
+        expect(afterMoreEdits.slug).toBe('human-chosen-slug')
+      })
+
+      test('should not change an already-set slug on publish or after', async ({ payload }) => {
+        const draft = await payload.create({
+          collection: 'slug-autosave',
+          draft: true,
+          data: { title: 'Draft One' },
+          overrideAccess: true,
+        })
+        created.push(draft.id)
+        expect(draft.slug).toBe('draft-one')
+
+        await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          draft: true,
+          data: { title: 'Publishable Title' },
+          overrideAccess: true,
+        })
+
+        const published = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          data: { _status: 'published', title: 'Publishable Title' },
+          overrideAccess: true,
+        })
+        expect(published.slug).toBe('draft-one')
+
+        const afterPublish = await payload.update({
+          collection: 'slug-autosave',
+          id: draft.id,
+          data: { _status: 'published', title: 'Title Changed After Publish' },
+          overrideAccess: true,
+        })
+        expect(afterPublish.slug).toBe('draft-one')
+      })
+    })
+  })
+
+  test.describe('slug field read access', () => {
+    const collection = 'slug-field-access'
+    const created: (number | string)[] = []
+
+    test.afterEach(async ({ payload }) => {
+      for (const id of created) {
+        await payload.delete({ collection, id, overrideAccess: true })
+      }
+      created.length = 0
+    })
+
+    test('should apply read access when a REST create omits overrideAccess', async ({
+      payload,
+      restClient,
+    }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { title: 'REST shared title' },
+        overrideAccess: true,
+      })
+      created.push(hidden.id)
+
+      const response = await restClient.POST(`/${collection}`, {
+        body: JSON.stringify({ title: 'REST shared title' }),
+      })
+      const { doc } = await response.json()
+      created.push(doc.id)
+
+      expect(response.status).toBe(201)
+      expect(doc.slug).toBe('rest-shared-title')
+    })
+
+    test('should apply read access when checking a generated slug during create', async ({
+      payload,
+    }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { title: 'Shared title' },
+        overrideAccess: true,
+      })
+      created.push(hidden.id)
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+      const createdWithAccess = await payload.create({
+        collection,
+        data: { title: 'Shared title' },
+        overrideAccess: false,
+        req,
+      })
+      created.push(createdWithAccess.id)
+
+      expect(createdWithAccess.slug).toBe('shared-title')
+    })
+
+    test('should apply read access when checking an explicit slug during update', async ({
+      payload,
+    }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { slug: 'shared-slug', title: 'Hidden' },
+        overrideAccess: true,
+      })
+      const editable = await payload.create({
+        collection,
+        data: { slug: 'editable-slug', title: 'Editable' },
+        overrideAccess: true,
+      })
+      created.push(hidden.id, editable.id)
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+      const updated = await payload.update({
+        collection,
+        id: editable.id,
+        data: { slug: 'shared-slug' },
+        overrideAccess: false,
+        req,
+      })
+
+      expect(updated.slug).toBe('shared-slug')
+    })
+
+    test('should apply read access while filling localized slugs', async ({ payload }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { localizedTitle: 'Localized title', title: 'Hidden' },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      created.push(hidden.id)
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+      const createdWithAccess = await payload.create({
+        collection,
+        data: { localizedTitle: 'Localized title', title: 'Visible' },
+        locale: 'en',
+        overrideAccess: false,
+        req,
+      })
+      created.push(createdWithAccess.id)
+
+      const allLocales = await payload.findByID({
+        collection,
+        id: createdWithAccess.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const hiddenLocales = await payload.findByID({
+        collection,
+        id: hidden.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      const localizedSlug = allLocales.localizedSlug as unknown as Record<string, string>
+      const hiddenLocalizedSlug = hiddenLocales.localizedSlug as unknown as Record<string, string>
+
+      expect(localizedSlug.en).toBe('localized-title')
+      expect(localizedSlug.es).toBe(hiddenLocalizedSlug.es)
+    })
+
+    test('should apply read access when choosing a source-less fallback', async ({ payload }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { title: 'Hidden' },
+        overrideAccess: true,
+      })
+      created.push(hidden.id)
+
+      const req = await createPayloadRequest({ payload, user: user.user })
+      const createdWithAccess = await payload.create({
+        collection,
+        data: { title: 'Visible' },
+        overrideAccess: false,
+        req,
+      })
+      created.push(createdWithAccess.id)
+
+      expect(createdWithAccess.sourcelessSlug).toBe(hidden.sourcelessSlug)
+    })
+
+    test('should retain elevated slug probes for explicitly elevated Local API creates', async ({
+      payload,
+    }) => {
+      const hidden = await payload.create({
+        collection,
+        data: { title: 'Shared title' },
+        overrideAccess: true,
+      })
+      created.push(hidden.id)
+
+      const elevated = await payload.create({
+        collection,
+        data: { title: 'Shared title' },
+        overrideAccess: true,
+      })
+      created.push(elevated.id)
+
+      expect(elevated.slug).toBe('shared-title-1')
+    })
+  })
+
+  test.describe('text', () => {
+    const createdDuplicateIDs: (number | string)[] = []
+    let doc
+    const text = 'text field'
+
+    test.beforeEach(async ({ payload }) => {
+      doc = await payload.create({
+        collection: 'text-fields',
+        data: { text },
+        overrideAccess: true,
+      })
+    })
+
+    test.afterEach(async ({ payload }) => {
+      for (const id of createdDuplicateIDs) {
+        await payload.delete({ id, collection: duplicateFieldsSlug, overrideAccess: true })
+      }
+      createdDuplicateIDs.length = 0
+    })
+
+    test('should use the default for a field disabled during duplication', async ({ payload }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledText: 'source-value',
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledText).toBe('duplicate-disabled-default')
+    })
+
+    test('should apply nested defaults when a group is disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledGroup: {
+            value: 'source-value',
+          },
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        context: {
+          shouldThrowDisabledDuplicateDescendantHook: true,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledGroup).toEqual({
+        value: 'duplicate-disabled-group-default',
+      })
+    })
+
+    test('should apply nested defaults when an array is disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledArray: [
+            {
+              value: 'source-value',
+            },
+          ],
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledArray).toHaveLength(1)
+      expect(duplicate.disabledArray?.[0]?.value).toBe('duplicate-disabled-array-default')
+    })
+
+    test('should apply nested defaults when blocks are disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledBlocks: [
+            {
+              blockType: 'disabledBlock',
+              value: 'source-value',
+            },
+          ],
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledBlocks).toHaveLength(1)
+      expect(duplicate.disabledBlocks?.[0]?.value).toBe('duplicate-disabled-block-default')
+    })
+
+    test('should apply a nested field default without discarding its array row', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          childDisabledArray: [
+            {
+              preserved: 'preserved-source-value',
+              reset: 'reset-source-value',
+            },
+          ],
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.childDisabledArray).toHaveLength(1)
+      expect(duplicate.childDisabledArray?.[0]).toMatchObject({
+        preserved: 'preserved-source-value',
+        reset: 'duplicate-disabled-child-default',
+      })
+    })
+
+    test('should accept request data for a field disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledText: 'source-value',
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledText: 'request-value',
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledText).toBe('request-value')
+    })
+
+    test('should skip beforeDuplicate hooks for a field disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledHookText: 'source-value',
+          text,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        context: {
+          shouldThrowDisabledDuplicateHook: true,
+        },
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledHookText).toBe('duplicate-disabled-hook-default')
+    })
+
+    test('should use the localized default for a localized field disabled during duplication', async ({
+      payload,
+    }) => {
+      const source = await payload.create({
+        collection: duplicateFieldsSlug,
+        data: {
+          disabledLocalizedText: 'localized-source-value',
+          text,
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(source.id)
+
+      const duplicate = await payload.duplicate({
+        id: source.id,
+        collection: duplicateFieldsSlug,
+        locale: 'en',
+        overrideAccess: true,
+      })
+      createdDuplicateIDs.push(duplicate.id)
+
+      expect(duplicate.disabledLocalizedText).toBe('duplicate-disabled-localized-default')
+    })
+
+    test('creates with default values', () => {
+      expect(doc.text).toStrictEqual(text)
+      expect(doc.defaultString).toStrictEqual(defaultText)
+      expect(doc.defaultEmptyString).toStrictEqual('')
+      expect(doc.defaultFunction).toStrictEqual(defaultText)
+      expect(doc.defaultAsync).toStrictEqual(defaultText)
+    })
+
+    test('should populate default values in beforeValidate hook', async ({ payload }) => {
+      const { dependentOnFieldWithDefaultValue, fieldWithDefaultValue } = await payload.create({
+        collection: 'text-fields',
+        data: { text },
+        overrideAccess: true,
+      })
+
+      expect(fieldWithDefaultValue).toEqual(dependentOnFieldWithDefaultValue)
+    })
+
+    test('should populate function default values from req', async ({ payload }) => {
+      const text = await payload.create({
+        req: {
+          context: {
+            defaultValue: 'from-context',
+          },
+        },
+        collection: 'text-fields',
+        data: { text: 'required' },
+        overrideAccess: true,
+      })
+
+      expect(text.defaultValueFromReq).toBe('from-context')
+    })
+
+    test('should localize an array of strings using hasMany', async ({ payload }) => {
+      const localizedHasMany = ['hello', 'world']
+      const { id } = await payload.create({
+        collection: 'text-fields',
+        data: {
+          localizedHasMany,
+          text,
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      const localizedDoc = await payload.findByID({
+        id,
+        collection: 'text-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error
+      expect(localizedDoc.localizedHasMany.en).toEqual(localizedHasMany)
+    })
+
+    test('should validate localized required text field with locale all', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale 'all' accepts object values for localized fields
+          localizedRequiredText: {
+            en: 'English text',
+            es: 'Spanish text',
+          },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      const allLocales = await payload.findByID({
+        id: doc.id,
+        collection: 'text-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error
+      expect(allLocales.localizedRequiredText.en).toEqual('English text')
+      // @ts-expect-error
+      expect(allLocales.localizedRequiredText.es).toEqual('Spanish text')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should enforce localized text length validation with locale all', async ({ payload }) => {
+      await expect(
+        payload.create({
+          collection: 'text-fields',
+          data: {
+            text: 'required',
+            // @ts-expect-error locale 'all' accepts object values for localized fields
+            localizedRequiredText: {
+              en: 'English text',
+              es: 'no',
+            },
+          },
+          locale: 'all',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Localized Required Text')
+    })
+
+    test('should skip validation for locales omitted from a locale all write', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale 'all' accepts object values for localized fields
+          localizedRequiredText: {
+            en: 'English text',
+          },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      const allLocales = await payload.findByID({
+        id: doc.id,
+        collection: 'text-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error locale 'all' returns locale-keyed object for localized fields
+      expect(allLocales.localizedRequiredText.en).toEqual('English text')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should enforce maxLength per locale and name the failing locale with locale all', async ({
+      payload,
+    }) => {
+      await expect(
+        payload.create({
+          collection: 'text-fields',
+          data: {
+            text: 'required',
+            // @ts-expect-error locale 'all' accepts object values for localized fields
+            localizedRequiredText: {
+              en: 'English text',
+              es: 'this value is definitely longer than twenty characters',
+            },
+          },
+          locale: 'all',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('Localized Required Text (es)')
+    })
+
+    test('should treat an empty locale map as missing for a required field with locale all', async ({
+      payload,
+    }) => {
+      await expect(
+        payload.create({
+          collection: 'text-fields',
+          data: {
+            text: 'required',
+            // @ts-expect-error locale 'all' accepts object values for localized fields
+            localizedRequiredText: {},
+          },
+          locale: 'all',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Localized Required Text')
+    })
+
+    test('should enforce localized length validation on update with locale all', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale 'all' accepts object values for localized fields
+          localizedRequiredText: {
+            en: 'English text',
+            es: 'Spanish text',
+          },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      await expect(
+        // @ts-expect-error locale 'all' accepts object values for localized fields
+        payload.update({
+          id: doc.id,
+          collection: 'text-fields',
+          data: {
+            localizedRequiredText: {
+              en: 'English text',
+              es: 'no',
+            },
+          },
+          locale: 'all',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Localized Required Text')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should persist updated values on a locale all update', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale 'all' accepts object values for localized fields
+          localizedRequiredText: { en: 'English one', es: 'Spanish one' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error locale 'all' accepts object values for localized fields
+      await payload.update({
+        id: doc.id,
+        collection: 'text-fields',
+        data: {
+          localizedRequiredText: { en: 'English two', es: 'Spanish two' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      const refetched: any = await payload.findByID({
+        id: doc.id,
+        collection: 'text-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(refetched.localizedRequiredText.en).toStrictEqual('English two')
+      expect(refetched.localizedRequiredText.es).toStrictEqual('Spanish two')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should only update submitted locales on a partial locale all update', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale 'all' accepts object values for localized fields
+          localizedRequiredText: { en: 'English one', es: 'Spanish one' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error locale 'all' accepts object values for localized fields
+      await payload.update({
+        id: doc.id,
+        collection: 'text-fields',
+        data: {
+          localizedRequiredText: { en: 'English two' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      const refetched: any = await payload.findByID({
+        id: doc.id,
+        collection: 'text-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(refetched.localizedRequiredText.en).toStrictEqual('English two')
+      expect(refetched.localizedRequiredText.es).toStrictEqual('Spanish one')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should scope req.locale per locale for a custom validator with locale all', async ({
+      payload,
+    }) => {
+      // Same sentinel in both locales; the validator only rejects it for `es`. If `req.locale` leaked as
+      // `'all'` (or `'en'`), neither would reject - so a rejection attributed to `(es)` proves the scoping.
+      await expect(
+        payload.create({
+          collection: 'text-fields',
+          data: {
+            text: 'required',
+            // @ts-expect-error locale all
+            localizedRequiredText: { en: 'English text', es: 'Spanish text' },
+            // @ts-expect-error locale all
+            localizedCustomValidate: { en: 'reject-es', es: 'reject-es' },
+          },
+          locale: 'all',
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('Localized Custom Validate (es)')
+    })
+
+    test('should pass the locale previousValue to a custom validator on a locale all update', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          // @ts-expect-error locale all
+          localizedRequiredText: { en: 'English text', es: 'Spanish text' },
+          // @ts-expect-error locale all
+          localizedCustomValidate: { en: 'prev-en', es: 'prev-es' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // The validator asserts the en previousValue is 'prev-en' (the locale's own prior value, not the
+      // whole `{ en, es }` object). A wrong previousValue returns an error naming the received value.
+      // @ts-expect-error locale all
+      const updated: any = await payload.update({
+        id: doc.id,
+        collection: 'text-fields',
+        data: {
+          localizedCustomValidate: { en: 'assert-previous', es: 'prev-es' },
+        },
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(updated.localizedCustomValidate.en).toStrictEqual('assert-previous')
+      expect(updated.localizedCustomValidate.es).toStrictEqual('prev-es')
+
+      await payload.delete({ collection: 'text-fields', id: doc.id, overrideAccess: true })
+    })
+
+    test('should query hasMany in', async ({ payload }) => {
+      const hit = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['one', 'five'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['two'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          hasMany: {
+            in: ['one'],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should query multiple hasMany fields', async ({ payload }) => {
+      await payload.delete({ collection: 'text-fields', where: {}, overrideAccess: true })
+      const hit = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['1', '2', '3'],
+          hasManySecond: ['4'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['6'],
+          hasManySecond: ['4'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          hasMany: { equals: '3' },
+          hasManySecond: {
+            equals: '4',
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should query hasMany with contains operator - string value', async ({ payload }) => {
+      const hit = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['apple pie', 'banana bread', 'cherry tart'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['orange juice', 'grape soda'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          hasMany: {
+            contains: 'banana',
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+
+      await payload.delete({ collection: 'text-fields', id: hit.id, overrideAccess: true })
+      await payload.delete({ collection: 'text-fields', id: miss.id, overrideAccess: true })
+    })
+
+    test('should query hasMany with contains operator - array value', async ({ payload }) => {
+      const hit1 = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['apple pie', 'banana bread'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const hit2 = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['cherry tart', 'grape soda'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          hasMany: ['orange juice', 'lemon water'],
+          text: 'required',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          hasMany: {
+            contains: ['banana', 'cherry'],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hit1Result = docs.find(({ id: findID }) => hit1.id === findID)
+      const hit2Result = docs.find(({ id: findID }) => hit2.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hit1Result).toBeDefined()
+      expect(hit2Result).toBeDefined()
+      expect(missResult).toBeFalsy()
+
+      await payload.delete({ collection: 'text-fields', id: hit1.id, overrideAccess: true })
+      await payload.delete({ collection: 'text-fields', id: hit2.id, overrideAccess: true })
+      await payload.delete({ collection: 'text-fields', id: miss.id, overrideAccess: true })
+    })
+
+    test('should query like on value', async ({ payload }) => {
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'dog',
+        },
+        overrideAccess: true,
+      })
+
+      const hit = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'cat',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          text: {
+            like: 'cat',
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should query not_like on value', async ({ payload }) => {
+      const hit = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'dog-unique-test',
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'cat-unique-test',
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'text-fields',
+        where: {
+          text: {
+            not_like: 'cat-unique-test',
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should query hasMany within an array', async ({ payload }) => {
+      const docFirst = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          array: [
+            {
+              texts: ['text_1', 'text_2'],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const docSecond = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          array: [
+            {
+              texts: ['text_other', 'text_2'],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const resEqualsFull = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'array.texts': {
+            equals: 'text_2',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resEqualsFull.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+      expect(resEqualsFull.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resEqualsFull.totalDocs).toBe(2)
+
+      const resEqualsFirst = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'array.texts': {
+            equals: 'text_1',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resEqualsFirst.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+      expect(resEqualsFirst.docs.find((res) => res.id === docSecond.id)).toBeUndefined()
+
+      expect(resEqualsFirst.totalDocs).toBe(1)
+
+      const resContainsSecond = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'array.texts': {
+            contains: 'text_other',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resContainsSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+      expect(resContainsSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resContainsSecond.totalDocs).toBe(1)
+
+      const resInSecond = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'array.texts': {
+            in: ['text_other'],
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resInSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+      expect(resInSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resInSecond.totalDocs).toBe(1)
+    })
+
+    test('should query hasMany within blocks', async ({ payload }) => {
+      const docFirst = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          blocks: [
+            {
+              blockType: 'blockWithText',
+              texts: ['text_1', 'text_2'],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const docSecond = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: 'required',
+          blocks: [
+            {
+              blockType: 'blockWithText',
+              texts: ['text_other', 'text_2'],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const resEqualsFull = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'blocks.texts': {
+            equals: 'text_2',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resEqualsFull.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+      expect(resEqualsFull.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resEqualsFull.totalDocs).toBe(2)
+
+      const resEqualsFirst = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'blocks.texts': {
+            equals: 'text_1',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resEqualsFirst.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+      expect(resEqualsFirst.docs.find((res) => res.id === docSecond.id)).toBeUndefined()
+
+      expect(resEqualsFirst.totalDocs).toBe(1)
+
+      const resContainsSecond = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'blocks.texts': {
+            contains: 'text_other',
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resContainsSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+      expect(resContainsSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resContainsSecond.totalDocs).toBe(1)
+
+      const resInSecond = await payload.find({
+        collection: 'text-fields',
+        where: {
+          'blocks.texts': {
+            in: ['text_other'],
+          },
+        },
+        sort: '-createdAt',
+        overrideAccess: true,
+      })
+
+      expect(resInSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+      expect(resInSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+      expect(resInSecond.totalDocs).toBe(1)
+    })
+
+    test('should delete rows when updating hasMany with empty array', async ({ payload }) => {
+      const { id: createdDocId } = await payload.create({
+        collection: textFieldsSlug,
+        data: {
+          text: 'hasMany deletion test',
+          hasMany: ['one', 'two', 'three'],
+        },
+        overrideAccess: true,
+      })
+
+      await payload.update({
+        collection: textFieldsSlug,
+        id: createdDocId,
+        data: {
+          hasMany: [],
+        },
+        overrideAccess: true,
+      })
+
+      const resultingDoc = await payload.findByID({
+        collection: textFieldsSlug,
+        id: createdDocId,
+        overrideAccess: true,
+      })
+
+      expect(resultingDoc.hasMany).toHaveLength(0)
+    })
+  })
+
+  test.describe('relationship', () => {
+    let textDoc
+    let otherTextDoc
+    let selfReferencing
+    let parent
+    let child
+    let grandChild
+    let relationshipInArray
+    const textDocText = 'text document'
+    const otherTextDocText = 'alt text'
+    const relationshipText = 'relationship text'
+
+    test.beforeEach(async ({ payload }) => {
+      textDoc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: textDocText,
+        },
+        overrideAccess: true,
+      })
+      otherTextDoc = await payload.create({
+        collection: 'text-fields',
+        data: {
+          text: otherTextDocText,
+        },
+        overrideAccess: true,
+      })
+      const relationship = { relationTo: 'text-fields', value: textDoc.id }
+      parent = await payload.create({
+        collection: relationshipFieldsSlug,
+        data: {
+          relationship,
+          text: relationshipText,
+        },
+        overrideAccess: true,
+      })
+
+      child = await payload.create({
+        collection: relationshipFieldsSlug,
+        data: {
+          relationToSelf: parent.id,
+          relationship,
+          text: relationshipText,
+        },
+        overrideAccess: true,
+      })
+
+      grandChild = await payload.create({
+        collection: relationshipFieldsSlug,
+        data: {
+          relationToSelf: child.id,
+          relationship,
+          text: relationshipText,
+        },
+        overrideAccess: true,
+      })
+
+      selfReferencing = await payload.create({
+        collection: relationshipFieldsSlug,
+        data: {
+          relationship,
+          text: relationshipText,
+        },
+        overrideAccess: true,
+      })
+
+      relationshipInArray = await payload.create({
+        collection: relationshipFieldsSlug,
+        data: {
+          array: [
+            {
+              relationship: otherTextDoc.id,
+            },
+          ],
+          relationship,
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should query parent self-reference', async ({ payload }) => {
+      const childResult = await payload.find({
+        collection: relationshipFieldsSlug,
+        where: {
+          relationToSelf: { equals: parent.id },
+        },
+        overrideAccess: true,
+      })
+
+      const grandChildResult = await payload.find({
+        collection: relationshipFieldsSlug,
+        where: {
+          relationToSelf: { equals: child.id },
+        },
+        overrideAccess: true,
+      })
+
+      const anyChildren = await payload.find({
+        collection: relationshipFieldsSlug,
+        overrideAccess: true,
+      })
+      const allChildren = await payload.find({
+        collection: relationshipFieldsSlug,
+        where: {
+          'relationToSelf.text': { equals: relationshipText },
+        },
+        overrideAccess: true,
+      })
+
+      expect(childResult.docs[0].id).toStrictEqual(child.id)
+      expect(grandChildResult.docs[0].id).toStrictEqual(grandChild.id)
+      expect(allChildren.docs).toHaveLength(2)
+    })
+
+    test('should query relationship inside array', async ({ payload }) => {
+      const result = await payload.find({
+        collection: relationshipFieldsSlug,
+        where: {
+          and: [
+            {
+              'array.relationship.text': { equals: otherTextDocText },
+            },
+            {
+              id: { equals: relationshipInArray.id },
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs).toHaveLength(1)
+      expect(result.docs[0]).toMatchObject(relationshipInArray)
+    })
+
+    test('should query text in row after relationship', async ({ payload }) => {
+      const row = await payload.create({
+        collection: 'row-fields',
+        data: { title: 'some-title', id: 'custom-row-id' },
+        overrideAccess: true,
+      })
+      const textDoc = await payload.create({
+        collection: 'text-fields',
+        data: { text: 'asd' },
+        overrideAccess: true,
+      })
+
+      const rel = await payload.create({
+        collection: 'relationship-fields',
+        data: {
+          relationship: { relationTo: 'text-fields', value: textDoc },
+          relationToRow: row.id,
+          relationToRowMany: [row.id],
+        },
+        overrideAccess: true,
+      })
+
+      const result = await payload.find({
+        collection: 'relationship-fields',
+        where: {
+          'relationToRow.title': { equals: 'some-title' },
+          'relationToRowMany.title': { equals: 'some-title' },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs[0].id).toBe(rel.id)
+      expect(result.totalDocs).toBe(1)
+    })
+  })
+
+  test.describe('rows', () => {
+    test('should show proper validation error message on text field within row field', async ({
+      payload,
+    }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'row-fields',
+          data: {
+            id: 'some-id',
+            title: '',
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Title within a row')
+    })
+  })
+
+  test.describe('timestamps', () => {
+    const tenMinutesAgo = new Date(Date.now() - 1000 * 60 * 10)
+    const tenMinutesLater = new Date(Date.now() + 1000 * 60 * 10)
+    let doc
+    test.beforeEach(async ({ payload }) => {
+      doc = await payload.create({
+        collection: 'date-fields',
+        data: dateDoc,
+        overrideAccess: true,
+      })
+    })
+
+    test('should query updatedAt', async ({ payload }) => {
+      const { docs } = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          updatedAt: {
+            greater_than_equal: tenMinutesAgo,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(docs.map(({ id }) => id)).toContain(doc.id)
+    })
+
+    test('should query createdAt (greater_than_equal with results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            greater_than_equal: tenMinutesAgo,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs[0].id).toEqual(doc.id)
+    })
+
+    test('should query createdAt (greater_than_equal with no results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            greater_than_equal: tenMinutesLater,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.totalDocs).toBe(0)
+    })
+
+    test('should query createdAt (less_than with results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            less_than: tenMinutesLater,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs[0].id).toEqual(doc.id)
+    })
+
+    test('should query createdAt (less_than with no results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            less_than: tenMinutesAgo,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.totalDocs).toBe(0)
+    })
+
+    test('should query createdAt (in with results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            in: [new Date(doc.createdAt)],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs[0].id).toBe(doc.id)
+    })
+
+    test('should query createdAt (in without results)', async ({ payload }) => {
+      const result = await payload.find({
+        collection: 'date-fields',
+        depth: 0,
+        where: {
+          createdAt: {
+            in: [tenMinutesAgo],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.totalDocs).toBe(0)
+    })
+
+    // Function to generate random date between start and end dates
+    function getRandomDate(start: Date, end: Date): string {
+      const date = new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()))
+      return date.toISOString()
+    }
+
+    // Generate sample data
+    const dataSample = Array.from({ length: 100 }, (_, index) => {
+      const startDate = new Date('2024-01-01')
+      const endDate = new Date('2025-12-31')
+
+      return {
+        array: Array.from({ length: 5 }, (_, listIndex) => {
+          return {
+            date: getRandomDate(startDate, endDate),
+          }
+        }),
+        ...dateDoc,
+      }
+    })
+
+    test('should query a date field inside an array field', async ({ payload }) => {
+      await payload.delete({ collection: 'date-fields', where: {}, overrideAccess: true })
+      for (const doc of dataSample) {
+        await payload.create({
+          collection: 'date-fields',
+          data: doc,
+          overrideAccess: true,
+        })
+      }
+
+      const res = await payload.find({
+        collection: 'date-fields',
+        where: { 'array.date': { greater_than: new Date('2025-06-01').toISOString() } },
+        overrideAccess: true,
+      })
+
+      const filter = (doc: any) =>
+        doc.array.some((item) => new Date(item.date).getTime() > new Date('2025-06-01').getTime())
+
+      expect(res.docs.every(filter)).toBe(true)
+      expect(dataSample.filter(filter)).toHaveLength(res.totalDocs)
+      if (res.totalDocs > 10) {
+        // This is where postgres might fail! selectDistinct actually removed some rows here, because it distincts by:
+        // not only ID, but also created_at, updated_at, items_date
+
+        expect(res.docs).toHaveLength(10)
+      } else {
+        expect(res.docs.length).toBeLessThanOrEqual(res.totalDocs)
+      }
+    })
+  })
+
+  test.describe('select', () => {
+    let doc
+    test.beforeEach(async ({ payload }) => {
+      const { id } = await payload.create({
+        collection: 'select-fields',
+        data: {
+          selectHasManyLocalized: ['one', 'two'],
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      doc = await payload.findByID({
+        id,
+        collection: 'select-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+    })
+
+    test('creates with hasMany localized', () => {
+      expect(doc.selectHasManyLocalized.en).toEqual(['one', 'two'])
+    })
+
+    test('retains hasMany updates', async ({ payload }) => {
+      const { id } = await payload.create({
+        collection: 'select-fields',
+        data: {
+          selectHasMany: ['one', 'two'],
+        },
+        overrideAccess: true,
+      })
+
+      const updatedDoc = await payload.update({
+        id,
+        collection: 'select-fields',
+        data: {
+          select: 'one',
+        },
+        overrideAccess: true,
+      })
+
+      expect(Array.isArray(updatedDoc.selectHasMany)).toBe(true)
+      expect(updatedDoc.selectHasMany).toEqual(['one', 'two'])
+    })
+
+    test('should clear select hasMany field', async ({ payload }) => {
+      const { id } = await payload.create({
+        collection: 'select-fields',
+        data: {
+          selectHasMany: ['one', 'two'],
+        },
+        overrideAccess: true,
+      })
+
+      const updatedDoc = await payload.update({
+        id,
+        collection: 'select-fields',
+        data: {
+          selectHasMany: [],
+        },
+        overrideAccess: true,
+      })
+
+      expect(updatedDoc.selectHasMany).toHaveLength(0)
+    })
+
+    test('should query hasMany in', async ({ payload }) => {
+      const hit = await payload.create({
+        collection: 'select-fields',
+        data: {
+          selectHasMany: ['one', 'four'],
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'select-fields',
+        data: {
+          selectHasMany: ['three'],
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'select-fields',
+        where: {
+          selectHasMany: {
+            in: ['one'],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should CRUD within array hasMany', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'select-fields',
+        data: { array: [{ selectHasMany: ['one', 'two'] }] },
+        overrideAccess: true,
+      })
+
+      expect(doc.array[0].selectHasMany).toStrictEqual(['one', 'two'])
+
+      const upd = await payload.update({
+        collection: 'select-fields',
+        id: doc.id,
+        data: {
+          array: [
+            {
+              id: doc.array[0].id,
+              selectHasMany: ['six'],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.array[0].selectHasMany).toStrictEqual(['six'])
+    })
+
+    test('should CRUD within array + group hasMany', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'select-fields',
+        data: { array: [{ group: { selectHasMany: ['one', 'two'] } }] },
+        overrideAccess: true,
+      })
+
+      expect(doc.array[0].group.selectHasMany).toStrictEqual(['one', 'two'])
+
+      const upd = await payload.update({
+        collection: 'select-fields',
+        id: doc.id,
+        data: {
+          array: [
+            {
+              id: doc.array[0].id,
+              group: { selectHasMany: ['six'] },
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.array[0].group.selectHasMany).toStrictEqual(['six'])
+    })
+
+    test('should work with versions', async ({ payload }) => {
+      const base = await payload.create({
+        collection: 'select-versions-fields',
+        data: { hasMany: ['a', 'b'] },
+        overrideAccess: true,
+      })
+
+      expect(base.hasMany).toStrictEqual(['a', 'b'])
+
+      const array = await payload.create({
+        collection: 'select-versions-fields',
+        data: { array: [{ hasManyArr: ['a', 'b'] }] },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(array.array[0]?.hasManyArr).toStrictEqual(['a', 'b'])
+
+      const block = await payload.create({
+        collection: 'select-versions-fields',
+        data: { blocks: [{ blockType: 'block', hasManyBlocks: ['a', 'b'] }] },
+        overrideAccess: true,
+      })
+
+      expect(block.blocks[0]?.hasManyBlocks).toStrictEqual(['a', 'b'])
+    })
+
+    test('should work with autosave', async ({ payload }) => {
+      let data = await payload.create({
+        collection: 'select-versions-fields',
+        data: { hasMany: ['a', 'b', 'c'] },
+        overrideAccess: true,
+      })
+      expect(data.hasMany).toStrictEqual(['a', 'b', 'c'])
+
+      data = await payload.update({
+        id: data.id,
+        collection: 'select-versions-fields',
+        data: { hasMany: ['a'] },
+        draft: true,
+        overrideAccess: true,
+      })
+      expect(data.hasMany).toStrictEqual(['a'])
+
+      data = await payload.update({
+        id: data.id,
+        collection: 'select-versions-fields',
+        data: { hasMany: ['a', 'b', 'c', 'd'] },
+        draft: true,
+        autosave: true,
+        overrideAccess: true,
+      })
+      expect(data.hasMany).toStrictEqual(['a', 'b', 'c', 'd'])
+
+      data = await payload.update({
+        id: data.id,
+        collection: 'select-versions-fields',
+        data: { hasMany: ['a'] },
+        draft: true,
+        autosave: true,
+        overrideAccess: true,
+      })
+      expect(data.hasMany).toStrictEqual(['a'])
+    })
+
+    test('should prevent against saving a value excluded by `filterOptions`', async ({
+      payload,
+    }) => {
+      try {
+        const result = await payload.create({
+          collection: 'select-fields',
+          data: {
+            disallowOption1: true,
+            selectWithFilteredOptions: 'one',
+          },
+          overrideAccess: true,
+        })
+
+        expect(result).toBeFalsy()
+      } catch (error) {
+        expect((error as Error).message).toBe(
+          'The following field is invalid: Select with filtered options',
+        )
+      }
+
+      const result = await payload.create({
+        collection: 'select-fields',
+        data: {
+          disallowOption1: true,
+          selectWithFilteredOptions: 'two',
+        },
+        overrideAccess: true,
+      })
+
+      expect(result).toBeTruthy()
+    })
+
+    test('should prevent against saving a value excluded by an async `filterOptions`', async ({
+      payload,
+    }) => {
+      await expect(
+        payload.create({
+          collection: 'select-fields',
+          data: {
+            disallowOption2: true,
+            selectAsyncFilterOptions: 'one',
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Select with async filtered options')
+
+      const result = await payload.create({
+        collection: 'select-fields',
+        data: {
+          disallowOption2: true,
+          selectAsyncFilterOptions: 'two',
+        },
+        overrideAccess: true,
+      })
+
+      expect(result).toBeTruthy()
+    })
+
+    test('should throw field error when duplicate values in hasMany select field', async ({
+      payload,
+    }) => {
+      let error: undefined | ValidationError
+
+      try {
+        await payload.create({
+          collection: 'select-fields',
+          data: {
+            selectHasMany: ['one', 'two', 'one', 'two', 'one'],
+          },
+          overrideAccess: true,
+        })
+      } catch (e) {
+        error = e as ValidationError
+      }
+
+      expect(error.data.errors[0].message).toBe(
+        'This field has the following invalid selections: "one", "one", "one", "two", "two"',
+      )
+    })
+  })
+
+  test.describe('number', () => {
+    let doc
+    test.beforeEach(async ({ payload }) => {
+      doc = await payload.create({
+        collection: 'number-fields',
+        data: numberDoc,
+        overrideAccess: true,
+      })
+    })
+
+    test('creates with default values', () => {
+      expect(doc.number).toEqual(numberDoc.number)
+      expect(doc.min).toEqual(numberDoc.min)
+      expect(doc.max).toEqual(numberDoc.max)
+      expect(doc.positiveNumber).toEqual(numberDoc.positiveNumber)
+      expect(doc.negativeNumber).toEqual(numberDoc.negativeNumber)
+      expect(doc.decimalMin).toEqual(numberDoc.decimalMin)
+      expect(doc.decimalMax).toEqual(numberDoc.decimalMax)
+      expect(doc.defaultNumber).toEqual(defaultNumber)
+    })
+
+    test('should not create number below minimum', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            min: 5,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Min')
+    })
+    test('should not create number above max', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            max: 15,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Max')
+    })
+
+    test('should not create number below 0', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            positiveNumber: -5,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Positive Number')
+    })
+
+    test('should not create number above 0', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            negativeNumber: 5,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Negative Number')
+    })
+    test('should not create a decimal number below min', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            decimalMin: -0.25,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Decimal Min')
+    })
+
+    test('should not create a decimal number above max', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            decimalMax: 1.5,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Decimal Max')
+    })
+    test('should localize an array of numbers using hasMany', async ({ payload }) => {
+      const localizedHasMany = [5, 10]
+      const { id } = await payload.create({
+        collection: 'number-fields',
+        data: {
+          localizedHasMany,
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+      const localizedDoc = await payload.findByID({
+        id,
+        collection: 'number-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // @ts-expect-error
+      expect(localizedDoc.localizedHasMany.en).toEqual(localizedHasMany)
+    })
+
+    test('should query hasMany in', async ({ payload }) => {
+      const hit = await payload.create({
+        collection: 'number-fields',
+        data: {
+          hasMany: [5, 10],
+        },
+        overrideAccess: true,
+      })
+
+      const miss = await payload.create({
+        collection: 'number-fields',
+        data: {
+          hasMany: [13],
+        },
+        overrideAccess: true,
+      })
+
+      const { docs } = await payload.find({
+        collection: 'number-fields',
+        where: {
+          hasMany: {
+            in: [5],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      const hitResult = docs.find(({ id: findID }) => hit.id === findID)
+      const missResult = docs.find(({ id: findID }) => miss.id === findID)
+
+      expect(hitResult).toBeDefined()
+      expect(missResult).toBeFalsy()
+    })
+
+    test('should properly query numbers with exists operator', async ({ payload }) => {
+      const docWithNull = await payload.create({
+        collection: 'number-fields',
+        data: {
+          number: null,
+        },
+        overrideAccess: true,
+      })
+
+      const numbersExist = await payload.find({
+        collection: 'number-fields',
+        where: {
+          number: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      // Verify that documents with number field are found (at least the seeded ones)
+      expect(numbersExist.totalDocs).toBeGreaterThanOrEqual(4)
+
+      const numbersNotExists = await payload.find({
+        collection: 'number-fields',
+        where: {
+          number: {
+            exists: false,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      // Verify we find at least the document we just created with null
+      expect(numbersNotExists.docs).toHaveLength(numbersNotExists.totalDocs)
+      expect(numbersNotExists.docs.find((doc) => doc.id === docWithNull.id)).toBeDefined()
+    })
+
+    test('should delete rows when updating hasMany with empty array', async ({ payload }) => {
+      const { id: createdDocId } = await payload.create({
+        collection: numberFieldsSlug,
+        data: {
+          localizedHasMany: [1, 2, 3],
+        },
+        overrideAccess: true,
+      })
+
+      await payload.update({
+        collection: numberFieldsSlug,
+        id: createdDocId,
+        data: {
+          localizedHasMany: [],
+        },
+        overrideAccess: true,
+      })
+
+      const resultingDoc = await payload.findByID({
+        collection: numberFieldsSlug,
+        id: createdDocId,
+        overrideAccess: true,
+      })
+
+      expect(resultingDoc.localizedHasMany).toHaveLength(0)
+    })
+  })
+
+  test('should query hasMany within an array', async ({ payload }) => {
+    const docFirst = await payload.create({
+      collection: 'number-fields',
+      data: {
+        array: [
+          {
+            numbers: [10, 30],
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+
+    const docSecond = await payload.create({
+      collection: 'number-fields',
+      data: {
+        array: [
+          {
+            numbers: [10, 40],
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+
+    const resEqualsFull = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'array.numbers': {
+          equals: 10,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resEqualsFull.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+    expect(resEqualsFull.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+    expect(resEqualsFull.totalDocs).toBe(2)
+
+    const resEqualsFirst = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'array.numbers': {
+          equals: 30,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resEqualsFirst.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+    expect(resEqualsFirst.docs.find((res) => res.id === docSecond.id)).toBeUndefined()
+
+    expect(resEqualsFirst.totalDocs).toBe(1)
+
+    const resInSecond = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'array.numbers': {
+          in: [40],
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resInSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+    expect(resInSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+    expect(resInSecond.totalDocs).toBe(1)
+  })
+
+  test('should query hasMany within blocks', async ({ payload }) => {
+    const docFirst = await payload.create({
+      collection: 'number-fields',
+      data: {
+        blocks: [
+          {
+            blockType: 'blockWithNumber',
+            numbers: [10, 30],
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+
+    const docSecond = await payload.create({
+      collection: 'number-fields',
+      data: {
+        blocks: [
+          {
+            blockType: 'blockWithNumber',
+            numbers: [10, 40],
+          },
+        ],
+      },
+      overrideAccess: true,
+    })
+
+    const resEqualsFull = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'blocks.numbers': {
+          equals: 10,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resEqualsFull.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+    expect(resEqualsFull.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+    expect(resEqualsFull.totalDocs).toBe(2)
+
+    const resEqualsFirst = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'blocks.numbers': {
+          equals: 30,
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resEqualsFirst.docs.find((res) => res.id === docFirst.id)).toBeDefined()
+    expect(resEqualsFirst.docs.find((res) => res.id === docSecond.id)).toBeUndefined()
+
+    expect(resEqualsFirst.totalDocs).toBe(1)
+
+    const resInSecond = await payload.find({
+      collection: 'number-fields',
+      where: {
+        'blocks.numbers': {
+          in: [40],
+        },
+      },
+      overrideAccess: true,
+    })
+
+    expect(resInSecond.docs.find((res) => res.id === docFirst.id)).toBeUndefined()
+    expect(resInSecond.docs.find((res) => res.id === docSecond.id)).toBeDefined()
+
+    expect(resInSecond.totalDocs).toBe(1)
+  })
+
+  test.options.describe('indexes', { db: 'mongo' }, () => {
+    let indexes
+    const definitions: Record<string, IndexDirection> = {}
+    const options: Record<string, IndexOptions> = {}
+
+    test.beforeAll(({ payloadInstance: payload }) => {
+      indexes = (payload.db as MongooseAdapter).collections['indexed-fields'].schema.indexes() as [
+        Record<string, IndexDirection>,
+        IndexOptions,
+      ]
+
+      indexes.forEach((index) => {
+        const field = Object.keys(index[0])[0]
+        definitions[field] = index[0][field]
+
+        options[field] = index[1]
+      })
+    })
+
+    test('should have indexes', () => {
+      expect(definitions.text).toEqual(1)
+    })
+
+    test('should have unique sparse indexes when field is not required', () => {
+      expect(definitions.uniqueText).toEqual(1)
+      expect(options.uniqueText).toMatchObject({ sparse: true, unique: true })
+    })
+
+    test('should have unique indexes that are not sparse when field is required', () => {
+      expect(definitions.uniqueRequiredText).toEqual(1)
+      expect(options.uniqueText).toMatchObject({ unique: true })
+    })
+
+    test('should have 2dsphere indexes on point fields', () => {
+      expect(definitions.point).toEqual('2dsphere')
+    })
+
+    test('should have 2dsphere indexes on point fields in groups', () => {
+      expect(definitions['group.point']).toEqual('2dsphere')
+    })
+
+    test('should have a sparse index on a unique localized field in a group', () => {
+      expect(definitions['group.localizedUnique.en']).toEqual(1)
+      expect(options['group.localizedUnique.en']).toMatchObject({ sparse: true, unique: true })
+      expect(definitions['group.localizedUnique.es']).toEqual(1)
+      expect(options['group.localizedUnique.es']).toMatchObject({ sparse: true, unique: true })
+    })
+
+    test('should have unique indexes in a collapsible', () => {
+      expect(definitions['collapsibleLocalizedUnique.en']).toEqual(1)
+      expect(options['collapsibleLocalizedUnique.en']).toMatchObject({
+        sparse: true,
+        unique: true,
+      })
+      expect(definitions.collapsibleTextUnique).toEqual(1)
+      expect(options.collapsibleTextUnique).toMatchObject({ unique: true })
+    })
+  })
+
+  test.options.describe('version indexes', { db: 'mongo' }, () => {
+    let indexes
+    const definitions: Record<string, IndexDirection> = {}
+    const options: Record<string, IndexOptions> = {}
+
+    test.beforeEach(({ payload }) => {
+      indexes = (payload.db as MongooseAdapter).versions['indexed-fields'].schema.indexes() as [
+        Record<string, IndexDirection>,
+        IndexOptions,
+      ]
+      indexes.forEach((index) => {
+        const field = Object.keys(index[0])[0]
+        definitions[field] = index[0][field]
+
+        options[field] = index[1]
+      })
+    })
+
+    test('should have versions indexes', () => {
+      expect(definitions['version.text']).toEqual(1)
+    })
+  })
+
+  test.describe('point', () => {
+    let doc
+    const point = [7, -7]
+    const localized = [5, -2]
+    const group = { point: [1, 9] }
+
+    test.beforeEach(async ({ payload }) => {
+      const findDoc = await payload.find({
+        collection: 'point-fields',
+        pagination: false,
+        overrideAccess: true,
+      })
+      ;[doc] = findDoc.docs
+    })
+
+    test('should read', async ({ payload }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+      const find = await payload.find({
+        collection: 'point-fields',
+        pagination: false,
+        overrideAccess: true,
+      })
+
+      ;[doc] = find.docs
+
+      expect(doc.point).toEqual(pointDoc.point)
+      expect(doc.localized).toEqual(pointDoc.localized)
+      expect(doc.group).toMatchObject(pointDoc.group)
+    })
+
+    test('should create', async ({ payload }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+      doc = await payload.create({
+        collection: 'point-fields',
+        data: {
+          group,
+          localized,
+          point,
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.point).toEqual(point)
+      expect(doc.localized).toEqual(localized)
+      expect(doc.group).toMatchObject(group)
+    })
+
+    test('should not create duplicate point when unique', async ({ payload }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+      // Use unique values for this test to avoid collisions with other tests
+      const uniqueLocalized = [99.123, -88.456]
+      const uniquePoint = [77.111, -66.222]
+      const uniqueGroup = { point: [55.333, 44.444] }
+
+      // first create the point field
+      doc = await payload.create({
+        collection: 'point-fields',
+        data: {
+          group: uniqueGroup,
+          localized: uniqueLocalized,
+          point: uniquePoint,
+        },
+        overrideAccess: true,
+      })
+
+      // Now make sure we can't create a duplicate (since 'localized' is a unique field)
+      await expect(() =>
+        payload.create({
+          collection: 'point-fields',
+          data: {
+            group: uniqueGroup,
+            localized: uniqueLocalized,
+            point: uniquePoint,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow(Error)
+
+      await expect(async () =>
+        payload.create({
+          collection: 'number-fields',
+          data: {
+            min: 5,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Min')
+
+      expect(doc.point).toEqual(uniquePoint)
+      expect(doc.localized).toEqual(uniqueLocalized)
+      expect(doc.group).toMatchObject(uniqueGroup)
+    })
+
+    test('should throw validation error when "required" field is set to null', async ({
+      payload,
+    }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+      // Use unique values to avoid collisions
+      const uniqueLocalized = [88.111, -77.222]
+      const uniquePoint = [66.333, -55.444]
+
+      // first create the point field
+      doc = await payload.create({
+        collection: 'point-fields',
+        data: {
+          localized: uniqueLocalized,
+          point: uniquePoint,
+        },
+        overrideAccess: true,
+      })
+
+      // try to update the required field to null
+      await expect(() =>
+        payload.update({
+          collection: 'point-fields',
+          data: {
+            point: null,
+          },
+          id: doc.id,
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Location')
+    })
+
+    test('should not throw validation error when non-"required" field is set to null', async ({
+      payload,
+    }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+      // Use unique values to avoid collisions
+      const uniqueLocalized = [44.555, -33.666]
+      const uniquePoint = [22.777, -11.888]
+
+      // first create the point field
+      doc = await payload.create({
+        collection: 'point-fields',
+        data: {
+          localized: uniqueLocalized,
+          point: uniquePoint,
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localized).toEqual(uniqueLocalized)
+
+      // try to update the non-required field to null
+      const updatedDoc = await payload.update({
+        collection: 'point-fields',
+        data: {
+          localized: null,
+        },
+        id: doc.id,
+        overrideAccess: true,
+      })
+
+      expect(updatedDoc.localized).toEqual(undefined)
+    })
+
+    test('should not error with camel case name point field', async ({ payload }) => {
+      if (payload.db.name === 'sqlite') {
+        return
+      }
+
+      const res = await payload.create({
+        collection: 'point-fields',
+        data: { point, camelCasePoint: [7, -7] },
+        overrideAccess: true,
+      })
+      expect(res.camelCasePoint).toEqual([7, -7])
+    })
+  })
+
+  test.describe('checkbox', () => {
+    test.beforeEach(async ({ payload }) => {
+      await payload.delete({
+        collection: checkboxFieldsSlug,
+        where: {
+          id: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should query checkbox fields with exists operator', async ({ payload }) => {
+      const existsTrueDoc = await payload.create({
+        collection: checkboxFieldsSlug,
+        data: {
+          checkbox: true,
+          checkboxNotRequired: false,
+        },
+        overrideAccess: true,
+      })
+
+      const existsFalseDoc = await payload.create({
+        collection: checkboxFieldsSlug,
+        data: {
+          checkbox: true,
+        },
+        overrideAccess: true,
+      })
+
+      const existsFalse = await payload.find({
+        collection: checkboxFieldsSlug,
+        where: {
+          checkboxNotRequired: {
+            exists: false,
+          },
+        },
+        overrideAccess: true,
+      })
+      expect(existsFalse.totalDocs).toBe(1)
+      expect(existsFalse.docs[0]?.id).toEqual(existsFalseDoc.id)
+
+      const existsTrue = await payload.find({
+        collection: checkboxFieldsSlug,
+        where: {
+          checkboxNotRequired: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      })
+      expect(existsTrue.totalDocs).toBe(1)
+      expect(existsTrue.docs[0]?.id).toEqual(existsTrueDoc.id)
+    })
+  })
+
+  test.describe('unique indexes', () => {
+    test.beforeEach(async ({ payload }) => {
+      // Clean up indexed-fields to avoid unique constraint violations
+      // This ensures each test starts with a clean slate
+      await payload.delete({
+        collection: 'indexed-fields',
+        where: {
+          id: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should throw validation error saving on unique fields', async ({ payload }) => {
+      const timestamp = Date.now() + Math.random()
+      const data = {
+        text: 'a-' + timestamp,
+        uniqueText: 'a-' + timestamp,
+      }
+      await payload.create({
+        collection: 'indexed-fields',
+        data,
+        overrideAccess: true,
+      })
+      expect(async () => {
+        const result = await payload.create({
+          collection: 'indexed-fields',
+          data,
+          overrideAccess: true,
+        })
+        return result.error
+      }).toBeDefined()
+    })
+
+    test('should throw validation error saving on unique relationship fields hasMany: false non polymorphic', async ({
+      payload,
+    }) => {
+      const textDoc = await payload.create({
+        collection: 'text-fields',
+        data: { text: 'unique-test-hasMany-false-' + Date.now() },
+        overrideAccess: true,
+      })
+
+      const firstDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-1-' + Date.now(),
+            text: 'unique-2-' + Date.now(),
+            uniqueRequiredText: 'unique-3-' + Date.now(),
+            uniqueRelationship: textDoc.id,
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-20-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      await expect(
+        payload.create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-4-' + Date.now(),
+            text: 'unique-5-' + Date.now(),
+            uniqueRequiredText: 'unique-10-' + Date.now(),
+            uniqueRelationship: textDoc.id,
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toBeTruthy()
+    })
+
+    test('should throw validation error saving on unique relationship fields hasMany: true', async ({
+      payload,
+    }) => {
+      const textDoc = await payload.create({
+        collection: 'text-fields',
+        data: { text: 'unique-test-hasMany-true-' + Date.now() },
+        overrideAccess: true,
+      })
+
+      const firstDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-hasMany1-' + Date.now(),
+            text: 'unique-hasMany2-' + Date.now(),
+            uniqueRequiredText: 'unique-hasMany3-' + Date.now(),
+            uniqueHasManyRelationship: [textDoc.id],
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-hasMany40-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      // Should allow the same relationship on a diferrent field!
+      const secondDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-hasMany31-' + Date.now(),
+            text: 'unique-hasMany24-' + Date.now(),
+            uniqueRequiredText: 'unique-hasMany55-' + Date.now(),
+            uniqueHasManyRelationship_2: [textDoc.id],
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-hasMany30-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      await expect(
+        payload.create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-hasMany4-' + Date.now(),
+            text: 'unique-hasMany5-' + Date.now(),
+            uniqueRequiredText: 'unique-hasMany10-' + Date.now(),
+            uniqueHasManyRelationship: [textDoc.id],
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toBeTruthy()
+    })
+
+    test('should throw validation error saving on unique relationship fields polymorphic not hasMany', async ({
+      payload,
+    }) => {
+      const textDoc = await payload.create({
+        collection: 'text-fields',
+        data: { text: 'unique-test-poly-' + Date.now() },
+        overrideAccess: true,
+      })
+
+      const firstDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-poly1-' + Date.now(),
+            text: 'unique-poly2-' + Date.now(),
+            uniqueRequiredText: 'unique-poly3-' + Date.now(),
+            uniquePolymorphicRelationship: { relationTo: 'text-fields', value: textDoc.id },
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-poly20-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      // Should allow the same relationship on a diferrent field!
+      const secondDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-poly31-' + Date.now(),
+            text: 'unique-poly24-' + Date.now(),
+            uniqueRequiredText: 'unique-poly55-' + Date.now(),
+            uniquePolymorphicRelationship_2: { relationTo: 'text-fields', value: textDoc.id },
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-poly100-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      await expect(
+        payload.create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-poly4-' + Date.now(),
+            text: 'unique-poly5-' + Date.now(),
+            uniqueRequiredText: 'unique-poly10-' + Date.now(),
+            uniquePolymorphicRelationship: { relationTo: 'text-fields', value: textDoc.id },
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toBeTruthy()
+    })
+
+    test('should throw validation error saving on unique relationship fields polymorphic hasMany: true', async ({
+      payload,
+    }) => {
+      const textDoc = await payload.create({
+        collection: 'text-fields',
+        data: { text: 'unique-test-poly-hasMany-' + Date.now() },
+        overrideAccess: true,
+      })
+
+      const firstDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-polyMany1-' + Date.now(),
+            text: 'unique-polyMany2-' + Date.now(),
+            uniqueRequiredText: 'unique-polyMany3-' + Date.now(),
+            uniqueHasManyPolymorphicRelationship: [
+              { relationTo: 'text-fields', value: textDoc.id },
+            ],
+          },
+          overrideAccess: true,
+        })
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-polyMany100-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      // Should allow the same relationship on a diferrent field!
+      const secondDoc = await payload
+        .create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-polyMany31-' + Date.now(),
+            text: 'unique-polyMany24-' + Date.now(),
+            uniqueRequiredText: 'unique-polyMany55-' + Date.now(),
+            uniqueHasManyPolymorphicRelationship_2: [
+              { relationTo: 'text-fields', value: textDoc.id },
+            ],
+          },
+          overrideAccess: true,
+        })
+        // Skip mongodb unique error because it threats localizedUniqueRequriedText.es as undefined
+        .then((doc) =>
+          payload.update({
+            locale: 'es',
+            collection: 'indexed-fields',
+            data: { localizedUniqueRequiredText: 'unique-polyMany300-' + Date.now() },
+            id: doc.id,
+            overrideAccess: true,
+          }),
+        )
+
+      await expect(
+        payload.create({
+          collection: 'indexed-fields',
+          data: {
+            localizedUniqueRequiredText: 'unique-polyMany4-' + Date.now(),
+            text: 'unique-polyMany5-' + Date.now(),
+            uniqueRequiredText: 'unique-polyMany10-' + Date.now(),
+            uniqueHasManyPolymorphicRelationship: [
+              { relationTo: 'text-fields', value: textDoc.id },
+            ],
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toBeTruthy()
+    })
+
+    test('should not throw validation error saving multiple null values for unique fields', async ({
+      payload,
+    }) => {
+      const timestamp = Date.now()
+      const data = {
+        localizedUniqueRequiredText: 'en1-' + timestamp,
+        text: 'a-' + timestamp,
+        uniqueRequiredText: 'a-' + timestamp,
+        // uniqueText omitted on purpose
+      }
+      const doc = await payload.create({
+        collection: 'indexed-fields',
+        data,
+        overrideAccess: true,
+      })
+      // Update spanish so we do not run into the unique constraint for other locales
+      await payload.update({
+        id: doc.id,
+        collection: 'indexed-fields',
+        data: {
+          localizedUniqueRequiredText: 'es1-' + timestamp,
+        },
+        locale: 'es',
+        overrideAccess: true,
+      })
+      data.uniqueRequiredText = 'b-' + timestamp
+      const result = await payload.create({
+        collection: 'indexed-fields',
+        data: { ...data, localizedUniqueRequiredText: 'en2-' + timestamp },
+        overrideAccess: true,
+      })
+
+      expect(result.id).toBeDefined()
+    })
+
+    test('should duplicate with unique fields', async ({ payload }) => {
+      const timestamp = Date.now()
+      const data = {
+        text: 'duplicate-' + timestamp,
+        uniqueRequiredText: 'uniqueRequired-' + timestamp,
+      }
+      const doc = await payload.create({
+        collection: 'indexed-fields',
+        data,
+        overrideAccess: true,
+      })
+      const result = await payload.duplicate({
+        id: doc.id,
+        collection: 'indexed-fields',
+        overrideAccess: true,
+      })
+
+      expect(result.id).not.toEqual(doc.id)
+      expect(result.uniqueRequiredText).toStrictEqual('uniqueRequired-' + timestamp + ' - Copy')
+    })
+  })
+
+  test.describe('array', () => {
+    let doc
+    const collection = arrayFieldsSlug
+
+    test.beforeEach(async ({ payload }) => {
+      doc = await payload.create({
+        collection,
+        data: {},
+        overrideAccess: true,
+      })
+    })
+
+    test('should create with ids and nested ids', async ({ payload }) => {
+      const docWithIDs = (await payload.create({
+        collection: groupFieldsSlug,
+        data: namedGroupDoc,
+        overrideAccess: true,
+      })) as Partial<GroupField>
+      expect(docWithIDs.group.subGroup.arrayWithinGroup[0].id).toBeDefined()
+    })
+
+    test('should create with defaultValue', () => {
+      expect(doc.items).toMatchObject(arrayDefaultValue)
+      expect(doc.localized).toMatchObject(arrayDefaultValue)
+    })
+
+    test('should create and update localized subfields with versions', async ({ payload }) => {
+      const doc = await payload.create({
+        collection,
+        data: {
+          items: [
+            {
+              localizedText: 'test',
+              text: 'required',
+            },
+          ],
+          localized: [
+            {
+              text: 'english',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const spanish = await payload.update({
+        id: doc.id,
+        collection,
+        data: {
+          items: [
+            {
+              id: doc.items[0].id,
+              localizedText: 'spanish',
+              text: 'required',
+            },
+          ],
+        },
+        locale: 'es',
+        overrideAccess: true,
+      })
+
+      const result = await payload.findByID({
+        id: doc.id,
+        collection,
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(doc.items[0].localizedText).toStrictEqual('test')
+      expect(spanish.items[0].localizedText).toStrictEqual('spanish')
+      expect(result.items[0].localizedText.en).toStrictEqual('test')
+      expect(result.items[0].localizedText.es).toStrictEqual('spanish')
+    })
+
+    test('should create and append localized items to nested array with versions', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection,
+        data: {
+          items: [{ text: 'req' }],
+          localized: [{ text: 'req' }],
+          nestedArrayLocalized: [
+            {
+              array: [
+                {
+                  text: 'marcelo',
+                },
+              ],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const res = await payload.update({
+        id: doc.id,
+        collection,
+        data: {
+          nestedArrayLocalized: [
+            ...doc.nestedArrayLocalized,
+            {
+              array: [
+                {
+                  text: 'alejandro',
+                },
+                {
+                  text: 'raul',
+                },
+              ],
+            },
+            {
+              array: [
+                {
+                  text: 'amigo',
+                },
+              ],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.nestedArrayLocalized).toHaveLength(3)
+
+      expect(res.nestedArrayLocalized[0].array[0].text).toBe('marcelo')
+
+      expect(res.nestedArrayLocalized[1].array[0].text).toBe('alejandro')
+      expect(res.nestedArrayLocalized[1].array[1].text).toBe('raul')
+
+      expect(res.nestedArrayLocalized[2].array[0].text).toBe('amigo')
+    })
+
+    test('should create with nested array', async ({ payload }) => {
+      const subArrayText = 'something expected'
+      const doc = await payload.create({
+        collection,
+        data: {
+          items: [
+            {
+              subArray: [
+                {
+                  text: subArrayText,
+                },
+              ],
+              text: 'test',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const result = await payload.findByID({
+        id: doc.id,
+        collection,
+        overrideAccess: true,
+      })
+
+      expect(result.items[0]).toMatchObject({
+        subArray: [
+          {
+            text: subArrayText,
+          },
+        ],
+        text: 'test',
+      })
+      expect(result.items[0].subArray[0].text).toStrictEqual(subArrayText)
+    })
+
+    test('should update without overwriting other locales with defaultValue', async ({
+      payload,
+    }) => {
+      const localized = [{ text: 'unique' }]
+      const enText = 'english'
+      const esText = 'spanish'
+      const { id } = await payload.create({
+        collection,
+        data: {
+          localized,
+        },
+        overrideAccess: true,
+      })
+
+      const enDoc = await payload.update({
+        id,
+        collection,
+        data: {
+          localized: [{ text: enText }],
+        },
+        locale: 'en',
+        overrideAccess: true,
+      })
+
+      const esDoc = await payload.update({
+        id,
+        collection,
+        data: {
+          localized: [{ text: esText }],
+        },
+        locale: 'es',
+        overrideAccess: true,
+      })
+
+      const allLocales = (await payload.findByID({
+        id,
+        collection,
+        locale: 'all',
+        overrideAccess: true,
+      })) as unknown as {
+        localized: {
+          en: unknown
+          es: unknown
+        }
+      }
+
+      expect(enDoc.localized[0].text).toStrictEqual(enText)
+      expect(esDoc.localized[0].text).toStrictEqual(esText)
+      expect(allLocales.localized.en[0].text).toStrictEqual(enText)
+      expect(allLocales.localized.es[0].text).toStrictEqual(esText)
+    })
+
+    test('should query by the same array', async ({ payload }) => {
+      const doc = await payload.create({
+        collection,
+        data: {
+          items: [
+            {
+              localizedText: 'test',
+              text: 'required',
+              anotherText: 'another',
+            },
+          ],
+          localized: [{ text: 'a' }],
+        },
+        overrideAccess: true,
+      })
+
+      // left join collection_items + left join collection_items_locales
+      const {
+        docs: [res],
+      } = await payload.find({
+        collection,
+        where: {
+          and: [
+            {
+              'items.localizedText': {
+                equals: 'test',
+              },
+            },
+            {
+              'items.anotherText': {
+                equals: 'another',
+              },
+            },
+            {
+              'items.text': {
+                equals: 'required',
+              },
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.id).toBe(doc.id)
+    })
+
+    test('should show proper validation error on text field in nested array', async ({
+      payload,
+    }) => {
+      await expect(async () =>
+        payload.create({
+          collection,
+          data: {
+            items: [
+              {
+                text: 'required',
+                subArray: [
+                  {
+                    textTwo: '',
+                  },
+                ],
+              },
+            ],
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Items 1 > Sub Array 1 > Second text field')
+    })
+
+    test('should show proper validation error on text field in row field in nested array', async ({
+      payload,
+    }) => {
+      await expect(async () =>
+        payload.create({
+          collection,
+          data: {
+            items: [
+              {
+                text: 'required',
+                subArray: [
+                  {
+                    textInRow: '',
+                  },
+                ],
+              },
+            ],
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Items 1 > Sub Array 1 > Text In Row')
+    })
+
+    test('should not have multiple instances of the id field in an array with a nested custom id field', ({
+      payload,
+    }) => {
+      const arraysCollection = payload.config.collections.find(
+        (collection) => collection.slug === arrayFieldsSlug,
+      )
+
+      const arrayWithNestedCustomIDField = arraysCollection?.fields.find(
+        (f) => f.name === 'arrayWithCustomID',
+      )
+
+      const idFields = arrayWithNestedCustomIDField?.fields.filter((f) => f.name === 'id')
+
+      expect(idFields).toHaveLength(1)
+      expect((idFields[0].admin?.disabled as { filter?: boolean })?.filter).toBe(true)
+    })
+
+    test.options('should query exists true', { db: 'mongo' }, async ({ payload }) => {
+      await payload.delete({ collection: 'array-fields', where: {}, overrideAccess: true })
+
+      const withoutCollapsed = await payload.create({
+        collection: 'array-fields',
+        data: {
+          localized: [
+            {
+              text: 'without-collapsed',
+            },
+          ],
+          items: [
+            {
+              text: 'without-collapsed',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      const withCollapsed = await payload.create({
+        collection: 'array-fields',
+        data: {
+          localized: [
+            {
+              text: 'with-collapsed',
+            },
+          ],
+          collapsedArray: [
+            {
+              text: 'with-collapsed',
+            },
+          ],
+          items: [{ text: 'with-collapsed' }],
+        },
+        overrideAccess: true,
+      })
+
+      const res = await payload.find({
+        collection: 'array-fields',
+        where: {
+          collapsedArray: {
+            exists: true,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.totalDocs).toBe(1)
+      expect(res.docs[0].id).toBe(withCollapsed.id)
+    })
+
+    test.options('should query exists false', { db: 'mongo' }, async ({ payload }) => {
+      await payload.delete({ collection: 'array-fields', where: {}, overrideAccess: true })
+
+      const withoutCollapsed = await payload.create({
+        collection: 'array-fields',
+        data: {
+          localized: [
+            {
+              text: 'without-collapsed',
+            },
+          ],
+          items: [
+            {
+              text: 'without-collapsed',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      const withCollapsed = await payload.create({
+        collection: 'array-fields',
+        data: {
+          localized: [
+            {
+              text: 'with-collapsed',
+            },
+          ],
+          collapsedArray: [
+            {
+              text: 'with-collapsed',
+            },
+          ],
+          items: [{ text: 'with-collapsed' }],
+        },
+        overrideAccess: true,
+      })
+
+      const res = await payload.find({
+        collection: 'array-fields',
+        where: {
+          collapsedArray: {
+            exists: false,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.totalDocs).toBe(1)
+      expect(res.docs[0].id).toBe(withoutCollapsed.id)
+    })
+
+    test('should properly handle richText inside array', async ({ payload }) => {
+      const richTextValue = {
+        root: {
+          type: 'root',
+          children: [
+            {
+              type: 'paragraph',
+              children: [{ type: 'text', text: 'Hello from array', format: 1 }],
+            },
+          ],
+        },
+      }
+
+      const doc = await payload.create({
+        collection,
+        data: {
+          items: [
+            {
+              text: 'required',
+              richTextField: richTextValue,
+            },
+          ],
+          localized: [{ text: 'req' }],
+        },
+        overrideAccess: true,
+      })
+
+      // Verify richText is returned as an object, not a string
+      expect(doc.items[0].richTextField).toBeDefined()
+      expect(typeof doc.items[0].richTextField).toBe('object')
+      expect(doc.items[0].richTextField).toEqual(richTextValue)
+
+      // Also verify on read
+      const found = await payload.findByID({
+        collection,
+        id: doc.id,
+        overrideAccess: true,
+      })
+
+      expect(found.items[0].richTextField).toBeDefined()
+      expect(typeof found.items[0].richTextField).toBe('object')
+      expect(found.items[0].richTextField).toEqual(richTextValue)
+    })
+
+    test('should not crash when array contains a null element', async ({ payload }) => {
+      const doc = await payload.create({
+        collection,
+        data: {
+          // @ts-expect-error testing null in array
+          items: [null, { text: 'required', localizedText: 'valid' }],
+        },
+        overrideAccess: true,
+      })
+
+      // The null should be stripped; the valid row should survive intact.
+      expect(doc.items).toHaveLength(1)
+      expect(doc.items[0].text).toBe('required')
+    })
+  })
+
+  test.describe('group', () => {
+    let document
+
+    test.beforeEach(async ({ payload }) => {
+      document = await payload.create({
+        collection: groupFieldsSlug,
+        data: {},
+        overrideAccess: true,
+      })
+    })
+
+    test('should create with defaultValue', () => {
+      expect(document.group.defaultParent).toStrictEqual(groupDefaultValue)
+      expect(document.group.defaultChild).toStrictEqual(groupDefaultChild)
+    })
+
+    test('should not have duplicate keys', () => {
+      expect(document.arrayOfGroups[0]).toMatchObject({
+        id: expect.any(String),
+        groupItem: {
+          text: 'Hello world',
+        },
+      })
+    })
+
+    test('should work with unnamed group', async ({ payload }) => {
+      const groupDoc = await payload.create({
+        collection: groupFieldsSlug,
+        data: {
+          insideUnnamedGroup: 'Hello world',
+          deeplyNestedGroup: { insideNestedUnnamedGroup: 'Secondfield' },
+        },
+        overrideAccess: true,
+      })
+      expect(groupDoc).toMatchObject({
+        id: expect.anything(),
+        insideUnnamedGroup: 'Hello world',
+        deeplyNestedGroup: {
+          insideNestedUnnamedGroup: 'Secondfield',
+        },
+      })
+    })
+
+    test('should work with unnamed group - graphql', async ({ restClient }) => {
+      const mutation = `mutation {
+              createGroupField(
+                data: {
+                  insideUnnamedGroup: "Hello world",
+                  deeplyNestedGroup: { insideNestedUnnamedGroup: "Secondfield" },
+                  group: {text: "hello"}
+                }
+              ) {
+                insideUnnamedGroup
+                deeplyNestedGroup {
+                  insideNestedUnnamedGroup
+                }
+              }
+            }`
+
+      const groupDoc = await restClient.GRAPHQL_POST({
+        body: JSON.stringify({ query: mutation }),
+      })
+
+      const data = (await groupDoc.json()).data.createGroupField
+
+      expect(data).toMatchObject({
+        insideUnnamedGroup: 'Hello world',
+        deeplyNestedGroup: {
+          insideNestedUnnamedGroup: 'Secondfield',
+        },
+      })
+    })
+
+    test('should query a subfield within a localized group', async ({ payload }) => {
+      const text = 'find this'
+      const hit = await payload.create({
+        collection: groupFieldsSlug,
+        data: {
+          localizedGroup: {
+            text,
+          },
+        },
+        overrideAccess: true,
+      })
+      const miss = await payload.create({
+        collection: groupFieldsSlug,
+        data: {
+          localizedGroup: {
+            text: 'do not find this',
+          },
+        },
+        overrideAccess: true,
+      })
+      const result = await payload.find({
+        collection: groupFieldsSlug,
+        where: {
+          'localizedGroup.text': { equals: text },
+        },
+        overrideAccess: true,
+      })
+
+      const resultIDs = result.docs.map(({ id }) => id)
+
+      expect(resultIDs).toContain(hit.id)
+      expect(resultIDs).not.toContain(miss.id)
+    })
+
+    test('should insert/read camelCase group with nested arrays + localized', async ({
+      payload,
+    }) => {
+      const res = await payload.create({
+        collection: 'group-fields',
+        data: {
+          group: { text: 'required' },
+          camelCaseGroup: {
+            array: [
+              {
+                text: 'text',
+                array: [
+                  {
+                    text: 'nested',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.camelCaseGroup.array[0].text).toBe('text')
+      expect(res.camelCaseGroup.array[0].array[0].text).toBe('nested')
+    })
+
+    test('should insert/update/read localized group with array inside', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: 'group-fields',
+        locale: 'en',
+        data: {
+          group: { text: 'req' },
+          localizedGroupArr: {
+            array: [{ text: 'text-en' }],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupArr.array[0].text).toBe('text-en')
+
+      const esDoc = await payload.update({
+        collection: 'group-fields',
+        locale: 'es',
+        id: doc.id,
+        data: {
+          localizedGroupArr: {
+            array: [{ text: 'text-es' }],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(esDoc.localizedGroupArr.array[0].text).toBe('text-es')
+
+      const allDoc = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(allDoc.localizedGroupArr.en.array[0].text).toBe('text-en')
+      expect(allDoc.localizedGroupArr.es.array[0].text).toBe('text-es')
+    })
+
+    test('should insert/update/read localized group with select hasMany inside', async ({
+      payload,
+    }) => {
+      const doc = await payload.create({
+        collection: 'group-fields',
+        locale: 'en',
+        data: {
+          group: { text: 'req' },
+          localizedGroupSelect: {
+            select: ['one', 'two'],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupSelect.select).toStrictEqual(['one', 'two'])
+
+      const esDoc = await payload.update({
+        collection: 'group-fields',
+        locale: 'es',
+        id: doc.id,
+        data: {
+          localizedGroupSelect: {
+            select: ['one'],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(esDoc.localizedGroupSelect.select).toStrictEqual(['one'])
+
+      const allDoc = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      expect(allDoc.localizedGroupSelect.en.select).toStrictEqual(['one', 'two'])
+      expect(allDoc.localizedGroupSelect.es.select).toStrictEqual(['one'])
+    })
+
+    test('should insert/update/read localized group with relationship inside', async ({
+      payload,
+    }) => {
+      const rel_1 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'pro123@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const rel_2 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'frank@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const doc = await payload.create({
+        collection: 'group-fields',
+        depth: 0,
+        data: {
+          group: { text: 'requireddd' },
+          localizedGroupRel: {
+            email: rel_1.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupRel.email).toBe(rel_1.id)
+
+      const upd = await payload.update({
+        collection: 'group-fields',
+        depth: 0,
+        id: doc.id,
+        locale: 'es',
+        data: {
+          localizedGroupRel: {
+            email: rel_2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.localizedGroupRel.email).toBe(rel_2.id)
+
+      const docAll = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        depth: 0,
+        overrideAccess: true,
+      })
+
+      expect(docAll.localizedGroupRel.en.email).toBe(rel_1.id)
+      expect(docAll.localizedGroupRel.es.email).toBe(rel_2.id)
+    })
+
+    test('should insert/update/read localized group with hasMany relationship inside', async ({
+      payload,
+    }) => {
+      const rel_1 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'pro123@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const rel_2 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'frank@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const doc = await payload.create({
+        collection: 'group-fields',
+        depth: 0,
+        data: {
+          group: { text: 'requireddd' },
+          localizedGroupManyRel: {
+            email: [rel_1.id],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupManyRel.email).toStrictEqual([rel_1.id])
+
+      const upd = await payload.update({
+        collection: 'group-fields',
+        depth: 0,
+        id: doc.id,
+        locale: 'es',
+        data: {
+          localizedGroupManyRel: {
+            email: [rel_2.id],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.localizedGroupManyRel.email).toStrictEqual([rel_2.id])
+
+      const docAll = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        depth: 0,
+        overrideAccess: true,
+      })
+
+      expect(docAll.localizedGroupManyRel.en.email).toStrictEqual([rel_1.id])
+      expect(docAll.localizedGroupManyRel.es.email).toStrictEqual([rel_2.id])
+    })
+
+    test('should insert/update/read localized group with poly relationship inside', async ({
+      payload,
+    }) => {
+      const rel_1 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'pro123@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const rel_2 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'frank@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const doc = await payload.create({
+        collection: 'group-fields',
+        depth: 0,
+        data: {
+          group: { text: 'requireddd' },
+          localizedGroupPolyRel: {
+            email: {
+              relationTo: 'email-fields',
+              value: rel_1.id,
+            },
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupPolyRel.email).toStrictEqual({
+        relationTo: 'email-fields',
+        value: rel_1.id,
+      })
+
+      const upd = await payload.update({
+        collection: 'group-fields',
+        depth: 0,
+        id: doc.id,
+        locale: 'es',
+        data: {
+          localizedGroupPolyRel: {
+            email: {
+              value: rel_2.id,
+              relationTo: 'email-fields',
+            },
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.localizedGroupPolyRel.email).toStrictEqual({
+        value: rel_2.id,
+        relationTo: 'email-fields',
+      })
+
+      const docAll = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        depth: 0,
+        overrideAccess: true,
+      })
+
+      expect(docAll.localizedGroupPolyRel.en.email).toStrictEqual({
+        value: rel_1.id,
+        relationTo: 'email-fields',
+      })
+      expect(docAll.localizedGroupPolyRel.es.email).toStrictEqual({
+        value: rel_2.id,
+        relationTo: 'email-fields',
+      })
+    })
+
+    test('should insert/update/read localized group with poly hasMany relationship inside', async ({
+      payload,
+    }) => {
+      const rel_1 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'pro123@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const rel_2 = await payload.create({
+        collection: 'email-fields',
+        data: { email: 'frank@gmail.com' },
+        overrideAccess: true,
+      })
+
+      const doc = await payload.create({
+        collection: 'group-fields',
+        depth: 0,
+        data: {
+          group: { text: 'requireddd' },
+          localizedGroupPolyHasManyRel: {
+            email: [
+              {
+                relationTo: 'email-fields',
+                value: rel_1.id,
+              },
+            ],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.localizedGroupPolyHasManyRel.email).toStrictEqual([
+        {
+          relationTo: 'email-fields',
+          value: rel_1.id,
+        },
+      ])
+
+      const upd = await payload.update({
+        collection: 'group-fields',
+        depth: 0,
+        id: doc.id,
+        locale: 'es',
+        data: {
+          localizedGroupPolyHasManyRel: {
+            email: [
+              {
+                value: rel_2.id,
+                relationTo: 'email-fields',
+              },
+            ],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(upd.localizedGroupPolyHasManyRel.email).toStrictEqual([
+        {
+          value: rel_2.id,
+          relationTo: 'email-fields',
+        },
+      ])
+
+      const docAll = await payload.findByID({
+        collection: 'group-fields',
+        id: doc.id,
+        locale: 'all',
+        depth: 0,
+        overrideAccess: true,
+      })
+
+      expect(docAll.localizedGroupPolyHasManyRel.en.email).toStrictEqual([
+        {
+          value: rel_1.id,
+          relationTo: 'email-fields',
+        },
+      ])
+      expect(docAll.localizedGroupPolyHasManyRel.es.email).toStrictEqual([
+        {
+          value: rel_2.id,
+          relationTo: 'email-fields',
+        },
+      ])
+    })
+  })
+
+  test.describe('tabs', () => {
+    let document
+
+    test.beforeEach(async ({ payload }) => {
+      document = await payload.create({
+        collection: tabsFieldsSlug,
+        data: tabsDoc,
+        overrideAccess: true,
+      })
+    })
+
+    test('should hot module reload and still be able to create', async ({ payload }) => {
+      const testDoc1 = await payload.findByID({
+        id: document.id,
+        collection: tabsFieldsSlug,
+        overrideAccess: true,
+      })
+
+      await reload(payload.config, payload, true)
+
+      const testDoc2 = await payload.findByID({
+        id: document.id,
+        collection: tabsFieldsSlug,
+        overrideAccess: true,
+      })
+
+      expect(testDoc1.id).toStrictEqual(testDoc2.id)
+    })
+
+    test('should create with fields inside a named tab', () => {
+      expect(document.tab.text).toStrictEqual(namedTabText)
+    })
+
+    test('should create with defaultValue inside a named tab', () => {
+      expect(document.tab.defaultValue).toStrictEqual(namedTabDefaultValue)
+    })
+
+    test('should create with defaultValue inside a named tab with no other values', () => {
+      expect(document.namedTabWithDefaultValue.defaultValue).toStrictEqual(namedTabDefaultValue)
+    })
+
+    test('should create with localized text inside a named tab', async ({ payload }) => {
+      document = await payload.findByID({
+        id: document.id,
+        collection: tabsFieldsSlug,
+        locale: 'all',
+        overrideAccess: true,
+      })
+      expect(document.localizedTab.en.text).toStrictEqual(localizedTextValue)
+    })
+
+    test('should allow access control on a named tab', async ({ payload }) => {
+      document = await payload.findByID({
+        id: document.id,
+        collection: tabsFieldsSlug,
+        overrideAccess: false,
+      })
+      expect(document.accessControlTab).toBeUndefined()
+    })
+
+    test('should allow hooks on a named tab', async ({ payload }) => {
+      const newDocument = await payload.create({
+        collection: tabsFieldsSlug,
+        data: tabsDoc,
+        overrideAccess: true,
+      })
+      expect(newDocument.hooksTab.beforeValidate).toBe(true)
+      expect(newDocument.hooksTab.beforeChange).toBe(true)
+      expect(newDocument.hooksTab.afterChange).toBe(true)
+      expect(newDocument.hooksTab.afterRead).toBe(true)
+    })
+
+    test('should return empty object for groups when no data present', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: groupFieldsSlug,
+        data: namedGroupDoc,
+        overrideAccess: true,
+      })
+
+      expect(doc.potentiallyEmptyGroup).toBeDefined()
+    })
+
+    test('should insert/read camelCase tab with nested arrays + localized', async ({ payload }) => {
+      const res = await payload.create({
+        collection: 'tabs-fields',
+        data: {
+          anotherText: 'req',
+          array: [{ text: 'req' }],
+          blocks: [{ blockType: 'content', text: 'req' }],
+          group: { number: 1 },
+          numberInRow: 1,
+          textInRow: 'req',
+          tab: { array: [{ text: 'req' }] },
+
+          camelCaseTab: {
+            array: [
+              {
+                text: 'text',
+                array: [
+                  {
+                    text: 'nested',
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(res.camelCaseTab.array[0].text).toBe('text')
+      expect(res.camelCaseTab.array[0].array[0].text).toBe('nested')
+    })
+
+    test('should show proper validation error message on text field within array within tab', async ({
+      payload,
+    }) => {
+      await expect(async () =>
+        payload.update({
+          id: document.id,
+          collection: tabsFieldsSlug,
+          data: {
+            array: [
+              {
+                text: 'one',
+              },
+              {
+                text: 'two',
+              },
+              {
+                text: '',
+              },
+            ],
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Tab with Array > Array 3 > Text')
+    })
+  })
+
+  test.describe('blocks', () => {
+    test('should use the inline block configuration for matching block types', async ({
+      payload,
+    }) => {
+      const req = await createPayloadRequest({ payload, user: user.user })
+      req.context.globalBlockVisited = false
+      req.context.inlineBlockVisited = false
+      req.context.globalBlockBeforeChange = false
+      req.context.inlineBlockBeforeChange = false
+      req.context.globalBlockAfterChange = false
+      req.context.inlineBlockAfterChange = false
+
+      const doc = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          // @ts-expect-error - Runtime coverage for a fixture absent from generated types.
+          sharedBlocks: [{ blockType: 'sharedBlock', inlineText: 'example' }],
+        },
+        overrideAccess: true,
+        req,
+      })
+
+      expect(req.context.globalBlockVisited).toBe(false)
+      expect(req.context.inlineBlockVisited).toBe(true)
+      expect(req.context.globalBlockBeforeChange).toBe(false)
+      expect(req.context.inlineBlockBeforeChange).toBe(true)
+      expect(req.context.globalBlockAfterChange).toBe(false)
+      expect(req.context.inlineBlockAfterChange).toBe(true)
+      expect(
+        (doc as unknown as { sharedBlocks: { inlineText: string }[] }).sharedBlocks[0]!.inlineText,
+      ).toBe('example')
+
+      req.context.globalBlockRead = false
+      req.context.inlineBlockRead = false
+      const found = await payload.findByID({
+        id: doc.id,
+        collection: blockFieldsSlug,
+        overrideAccess: true,
+        req,
+      })
+
+      expect(req.context.globalBlockRead).toBe(false)
+      expect(req.context.inlineBlockRead).toBe(true)
+      expect(
+        (found as unknown as { sharedBlocks: { inlineText: string }[] }).sharedBlocks[0]!
+          .inlineText,
+      ).toBe('example')
+
+      const matches = await payload.find({
+        collection: blockFieldsSlug,
+        overrideAccess: true,
+        where: { 'sharedBlocks.blockType': { equals: 'sharedBlock' } },
+      })
+      expect(matches.docs.some((match) => match.id === doc.id)).toBe(true)
+    })
+
+    test('should validate block types against the field options on create', async ({ payload }) => {
+      const req = await createPayloadRequest({ payload, user: user.user })
+      req.context.configBlockVisited = false
+
+      await expect(
+        payload.create({
+          collection: blockFieldsSlug,
+          data: {
+            // @ts-expect-error - Runtime validation covers values outside the generated field type.
+            configuration: [{ blockType: 'ConfigBlockTest', deduplicatedText: 'example' }],
+          },
+          overrideAccess: true,
+          req,
+        }),
+      ).rejects.toMatchObject({
+        name: 'ValidationError',
+        data: { errors: [{ path: 'configuration.0.blockType' }] },
+      })
+
+      expect(req.context.configBlockVisited).toBe(false)
+    })
+
+    test('should validate block types against the field options on update', async ({ payload }) => {
+      const { docs } = await payload.find({
+        collection: blockFieldsSlug,
+        limit: 1,
+        overrideAccess: true,
+      })
+      const req = await createPayloadRequest({ payload, user: user.user })
+      req.context.configBlockVisited = false
+
+      await expect(
+        payload.update({
+          id: docs[0]!.id,
+          collection: blockFieldsSlug,
+          data: {
+            // @ts-expect-error - Runtime validation covers values outside the generated field type.
+            configuration: [{ blockType: 'ConfigBlockTest', deduplicatedText: 'example' }],
+          },
+          overrideAccess: true,
+          req,
+        }),
+      ).rejects.toMatchObject({
+        name: 'ValidationError',
+        data: { errors: [{ path: 'configuration.0.blockType' }] },
+      })
+
+      expect(req.context.configBlockVisited).toBe(false)
+    })
+
+    test('should validate block types against the field options over REST', async ({
+      restClient,
+    }) => {
+      const response = await restClient.POST(`/${blockFieldsSlug}`, {
+        body: JSON.stringify({
+          configuration: [{ blockType: 'ConfigBlockTest', deduplicatedText: 'example' }],
+        }),
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test('should validate block types in a conditionally hidden field', async ({ payload }) => {
+      const req = await createPayloadRequest({ payload, user: user.user })
+      req.context.configBlockVisited = false
+
+      await expect(
+        payload.create({
+          collection: blockFieldsSlug,
+          data: {
+            conditionalGroup: {
+              conditionalConfiguration: [
+                {
+                  // @ts-expect-error - Runtime validation covers values outside the generated field type.
+                  blockType: 'ConfigBlockTest',
+                  deduplicatedText: 'example',
+                },
+              ],
+            },
+            showConditionalFields: false,
+          },
+          overrideAccess: true,
+          req,
+        }),
+      ).rejects.toMatchObject({
+        name: 'ValidationError',
+        data: { errors: [{ path: 'conditionalGroup.conditionalConfiguration.0.blockType' }] },
+      })
+
+      expect(req.context.configBlockVisited).toBe(false)
+    })
+
+    test('should retrieve doc with blocks', async ({ payload }) => {
+      const blockFields = await payload.find({
+        collection: 'block-fields',
+        overrideAccess: true,
+      })
+
+      expect(blockFields.docs[0].blocks[0].blockType).toEqual(blocksDoc.blocks[0].blockType)
+      expect(blockFields.docs[0].blocks[0].text).toEqual(blocksDoc.blocks[0].text)
+
+      expect(blockFields.docs[0].blocks[2].blockType).toEqual(blocksDoc.blocks[2].blockType)
+      expect(blockFields.docs[0].blocks[2].blockName).toEqual(blocksDoc.blocks[2].blockName)
+      expect(blockFields.docs[0].blocks[2].subBlocks[0].number).toEqual(
+        blocksDoc.blocks[2].subBlocks[0].number,
+      )
+      expect(blockFields.docs[0].blocks[2].subBlocks[1].text).toEqual(
+        blocksDoc.blocks[2].subBlocks[1].text,
+      )
+    })
+
+    // TODO: re-enable on sqlite once the drizzle sqlite adapter's createJSONQuery supports
+    // lexical's `{root: {children: [...]}}` shape
+    test.options(
+      'should query based on richtext data within a block',
+      { db: (adapter) => adapter.startsWith('sqlite') === false },
+      async ({ payload }) => {
+        const blockFieldsSuccess = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'blocks.richText.root.children.children.text': {
+              like: 'fun',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsSuccess.docs).toHaveLength(1)
+
+        const blockFieldsFail = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'blocks.richText.root.children.children.text': {
+              like: 'funny',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsFail.docs).toHaveLength(0)
+      },
+    )
+
+    // TODO: re-enable on sqlite — see note above.
+    test.options(
+      'should query based on richtext data within a localized block, specifying locale',
+      { db: (adapter) => adapter.startsWith('sqlite') === false },
+      async ({ payload }) => {
+        const blockFieldsSuccess = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'localizedBlocks.en.richText.root.children.children.text': {
+              like: 'fun',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsSuccess.docs).toHaveLength(1)
+
+        const blockFieldsFail = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'localizedBlocks.en.richText.root.children.children.text': {
+              like: 'funny',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsFail.docs).toHaveLength(0)
+      },
+    )
+
+    // TODO: re-enable on sqlite — see note above.
+    test.options(
+      'should query based on richtext data within a localized block, without specifying locale',
+      { db: (adapter) => adapter.startsWith('sqlite') === false },
+      async ({ payload }) => {
+        const blockFieldsSuccess = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'localizedBlocks.richText.root.children.children.text': {
+              like: 'fun',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsSuccess.docs).toHaveLength(1)
+
+        const blockFieldsFail = await payload.find({
+          collection: 'block-fields',
+          where: {
+            'localizedBlocks.richText.root.children.children.text': {
+              like: 'funny',
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(blockFieldsFail.docs).toHaveLength(0)
+      },
+    )
+
+    test('should filter based on nested block fields', async ({ payload }) => {
+      await payload.create({
+        collection: 'block-fields',
+        data: {
+          blocks: [
+            {
+              blockType: 'content',
+              text: 'green',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      await payload.create({
+        collection: 'block-fields',
+        data: {
+          blocks: [
+            {
+              blockType: 'content',
+              text: 'pink',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      await payload.create({
+        collection: 'block-fields',
+        data: {
+          blocks: [
+            {
+              blockType: 'content',
+              text: 'green',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const blockFields = await payload.find({
+        collection: 'block-fields',
+        overrideAccess: false,
+        user,
+        where: {
+          and: [
+            {
+              'blocks.text': {
+                equals: 'green',
+              },
+            },
+          ],
+        },
+      })
+
+      const { docs } = blockFields
+      expect(docs).toHaveLength(2)
+    })
+
+    test('should query blocks with nested relationship', async ({ payload }) => {
+      const textDoc = await payload.create({
+        collection: textFieldsSlug,
+        data: {
+          text: 'test',
+        },
+        overrideAccess: true,
+      })
+      const blockDoc = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          relationshipBlocks: [
+            {
+              blockType: 'relationships',
+              relationship: textDoc.id,
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      const result = await payload.find({
+        collection: blockFieldsSlug,
+        where: {
+          'relationshipBlocks.relationship': { equals: textDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs).toHaveLength(1)
+      expect(result.docs[0]).toMatchObject(blockDoc)
+    })
+
+    test('should query by blockType', async ({ payload }) => {
+      const text = 'blockType query test'
+
+      const hit = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          blocks: [
+            {
+              blockType: 'content',
+              text,
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+      const miss = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          blocks: [
+            {
+              blockType: 'number',
+              number: 5,
+            },
+          ],
+          duplicate: [
+            {
+              blockType: 'content',
+              text,
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const { docs: equalsDocs } = await payload.find({
+        collection: blockFieldsSlug,
+        where: {
+          and: [
+            {
+              'blocks.blockType': { equals: 'content' },
+            },
+            {
+              'blocks.text': { equals: text },
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      const { docs: inDocs } = await payload.find({
+        collection: blockFieldsSlug,
+        where: {
+          'blocks.blockType': { in: ['content'] },
+        },
+        overrideAccess: true,
+      })
+
+      const equalsHitResult = equalsDocs.find(({ id }) => id === hit.id)
+      const inHitResult = inDocs.find(({ id }) => id === hit.id)
+      const equalsMissResult = equalsDocs.find(({ id }) => id === miss.id)
+      const inMissResult = inDocs.find(({ id }) => id === miss.id)
+
+      expect(equalsHitResult.id).toStrictEqual(hit.id)
+      expect(inHitResult.id).toStrictEqual(hit.id)
+      expect(equalsMissResult).toBeUndefined()
+      expect(inMissResult).toBeUndefined()
+    })
+
+    test('should allow localized array of blocks', async ({ payload }) => {
+      const result = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          blocksWithLocalizedArray: [
+            {
+              blockType: 'localizedArray',
+              array: [
+                {
+                  text: 'localized',
+                },
+              ],
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.blocksWithLocalizedArray[0].array[0].text).toEqual('localized')
+    })
+
+    test('ensure localized field within block reference is saved correctly', async ({
+      payload,
+    }) => {
+      const blockFields = await payload.find({
+        collection: 'block-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // Find the document that has the localizedReferences field from the seed
+      const doc: BlockField = blockFields.docs.find(
+        (d: BlockField) =>
+          d?.localizedReferences?.[0]?.blockType === 'localizedTextReference2' &&
+          d?.localizedReferences?.[0]?.text !== undefined,
+      ) as BlockField
+
+      expect(doc?.localizedReferences?.[0]?.blockType).toEqual('localizedTextReference2')
+      expect(doc?.localizedReferences?.[0]?.text).toEqual({ en: 'localized text' })
+    })
+
+    test('ensure localized property is stripped from localized field within localized block reference', async ({
+      payload,
+    }) => {
+      const blockFields = await payload.find({
+        collection: 'block-fields',
+        locale: 'all',
+        overrideAccess: true,
+      })
+
+      // Find the document that has the localizedReferencesLocalizedBlock field from the seed
+      const doc: any = blockFields.docs.find(
+        (d: any) =>
+          d?.localizedReferencesLocalizedBlock?.en?.[0]?.blockType === 'localizedTextReference' &&
+          d?.localizedReferencesLocalizedBlock?.en?.[0]?.text !== undefined,
+      )
+
+      expect(doc?.localizedReferencesLocalizedBlock?.en?.[0]?.blockType).toEqual(
+        'localizedTextReference',
+      )
+      expect(doc?.localizedReferencesLocalizedBlock?.en?.[0]?.text).toEqual('localized text')
+    })
+
+    test('should not crash when blocks array contains a null element', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: blockFieldsSlug,
+        data: {
+          // @ts-expect-error - intentionally injecting null
+          blocks: [
+            null,
+            {
+              blockType: 'content',
+              text: 'valid block',
+            },
+          ],
+        },
+        overrideAccess: true,
+      })
+
+      // The null should be stripped; the valid block should survive intact.
+      expect(doc.blocks).toHaveLength(1)
+      expect(doc.blocks[0].blockType).toBe('content')
+      expect(doc.blocks[0].text).toBe('valid block')
+    })
+  })
+
+  test.describe('collapsible', () => {
+    test('should show proper validation error message for fields nested in collapsible', async ({
+      payload,
+    }) => {
+      await expect(async () =>
+        payload.create({
+          collection: collapsibleFieldsSlug,
+          data: {
+            text: 'required',
+            group: {
+              subGroup: {
+                requiredTextWithinSubGroup: '',
+              },
+            },
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow(
+        'The following field is invalid: Collapsible Field > Group > Sub Group > Required Text Within Sub Group',
+      )
+    })
+  })
+
+  test.describe('json', () => {
+    test('should save json data', async ({ payload }) => {
+      const json = { foo: 'bar' }
+      const doc = await payload.create({
+        collection: 'json-fields',
+        data: {
+          json,
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.json).toStrictEqual({ foo: 'bar' })
+    })
+
+    test('should validate json', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'json-fields',
+          data: {
+            json: '{ bad input: true }',
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Json')
+    })
+
+    test('should validate json schema', async ({ payload }) => {
+      await expect(async () =>
+        payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { foo: 'bad' },
+          },
+          overrideAccess: true,
+        }),
+      ).rejects.toThrow('The following field is invalid: Json')
+    })
+
+    test('should save empty json objects', async ({ payload }) => {
+      const jsonFieldsDoc = await payload.create({
+        collection: 'json-fields',
+        data: {
+          json: {
+            state: {},
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(jsonFieldsDoc.json.state).toEqual({})
+
+      const updatedJsonFieldsDoc = await payload.update({
+        id: jsonFieldsDoc.id,
+        collection: 'json-fields',
+        data: {
+          json: {
+            state: {},
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(updatedJsonFieldsDoc.json.state).toEqual({})
+    })
+
+    test.describe('querying', () => {
+      let fooBar
+      let bazBar
+
+      test.beforeEach(async ({ payload }) => {
+        // Clean up all json-fields documents to have a clean slate
+        // This ensures each test has predictable data and query results
+        await payload.delete({
+          collection: 'json-fields',
+          where: {
+            id: {
+              exists: true,
+            },
+          },
+          overrideAccess: true,
+        })
+
+        fooBar = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { foo: 'foobar', number: 5 },
+          },
+          overrideAccess: true,
+        })
+
+        bazBar = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { baz: 'bar', number: 10 },
+          },
+          overrideAccess: true,
+        })
+
+        // Create content for array 'in' and 'not_in' queries
+        for (let i = 1; i < 6; i++) {
+          await payload.create({
+            collection: 'json-fields',
+            data: {
+              json: {
+                value: i,
+                isEven: i % 2 === 0,
+              },
+            },
+            overrideAccess: true,
+          })
+        }
+      })
+
+      test('should query nested properties - like', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { like: 'bar' },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+      })
+
+      test('should query nested properties - not_like', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.baz': { not_like: 'bar' },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+      })
+
+      test('should query nested properties - equals', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { equals: 'foobar' },
+          },
+          overrideAccess: true,
+        })
+
+        const notEquals = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { equals: 'bar' },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+        expect(notEquals.docs).toHaveLength(0)
+      })
+
+      test('should query nested numbers - equals', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.number': { equals: 5 },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+      })
+
+      test('should query nested properties - exists', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { exists: true },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+      })
+
+      test('should query - exists', async ({ payload }) => {
+        const nullJSON = await payload.create({
+          collection: 'json-fields',
+          data: {},
+          overrideAccess: true,
+        })
+        const hasJSON = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: [],
+          },
+          overrideAccess: true,
+        })
+
+        const docsExistsFalse = await payload.find({
+          collection: 'json-fields',
+          where: {
+            json: { exists: false },
+          },
+          overrideAccess: true,
+        })
+        const docsExistsTrue = await payload.find({
+          collection: 'json-fields',
+          where: {
+            json: { exists: true },
+          },
+          overrideAccess: true,
+        })
+
+        const existFalseIDs = docsExistsFalse.docs.map(({ id }) => id)
+        const existTrueIDs = docsExistsTrue.docs.map(({ id }) => id)
+
+        expect(existFalseIDs).toContain(nullJSON.id)
+        expect(existTrueIDs).not.toContain(nullJSON.id)
+
+        expect(existTrueIDs).toContain(hasJSON.id)
+        expect(existFalseIDs).not.toContain(hasJSON.id)
+      })
+
+      test('exists should not return null values', async ({ payload }) => {
+        const { id } = await payload.create({
+          collection: 'select-fields',
+          data: {
+            select: 'one',
+          },
+          overrideAccess: true,
+        })
+
+        const existsResult = await payload.find({
+          collection: 'select-fields',
+          where: {
+            id: { equals: id },
+            select: { exists: true },
+          },
+          overrideAccess: true,
+        })
+
+        expect(existsResult.docs).toHaveLength(1)
+
+        const existsFalseResult = await payload.find({
+          collection: 'select-fields',
+          where: {
+            id: { equals: id },
+            select: { exists: false },
+          },
+          overrideAccess: true,
+        })
+
+        expect(existsFalseResult.docs).toHaveLength(0)
+
+        await payload.update({
+          id,
+          collection: 'select-fields',
+          data: {
+            select: null,
+          },
+          overrideAccess: true,
+        })
+
+        const existsTrueResult = await payload.find({
+          collection: 'select-fields',
+          where: {
+            id: { equals: id },
+            select: { exists: true },
+          },
+          overrideAccess: true,
+        })
+
+        expect(existsTrueResult.docs).toHaveLength(0)
+
+        const result = await payload.find({
+          collection: 'select-fields',
+          where: {
+            id: { equals: id },
+            select: { exists: false },
+          },
+          overrideAccess: true,
+        })
+
+        expect(result.docs).toHaveLength(1)
+      })
+
+      test('should query nested numbers - in', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.value': { in: [1, 3] },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ json }) => json.value)
+
+        expect(docIDs).toContain(1)
+        expect(docIDs).toContain(3)
+        expect(docIDs).not.toContain(2)
+      })
+
+      test('should query nested numbers - not_in', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.value': { not_in: [1, 3] },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ json }) => json.value)
+
+        expect(docIDs).not.toContain(1)
+        expect(docIDs).not.toContain(3)
+        expect(docIDs).toContain(2)
+      })
+
+      test('should query nested strings as literals - in', async ({ payload }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { in: ['foobar'] },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).toContain(fooBar.id)
+        expect(docIDs).not.toContain(bazBar.id)
+      })
+
+      test('should query nested strings as literals - not_in', async ({ payload }) => {
+        const otherFoo = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { foo: 'bar', number: 10 },
+          },
+          overrideAccess: true,
+        })
+
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.foo': { not_in: ['foobar'] },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docIDs).not.toContain(fooBar.id)
+        expect(docIDs).toContain(otherFoo.id)
+      })
+
+      test('should query nested mixed arrays with null literals - in', async ({ payload }) => {
+        const stringValue = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { value: 'literal-value' },
+          },
+          overrideAccess: true,
+        })
+
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.value': { in: [null, 1, 'literal-value'] },
+          },
+          overrideAccess: true,
+        })
+
+        const docValues = docs.map(({ json }) => json.value)
+        const docIDs = docs.map(({ id }) => id)
+
+        expect(docValues).toContain(1)
+        expect(docIDs).toContain(stringValue.id)
+        expect(docValues).not.toContain(2)
+      })
+
+      test('should query nested numbers with multiple clauses - equals_and_in', async ({
+        payload,
+      }) => {
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            and: [
+              {
+                'json.isEven': { equals: true },
+              },
+              {
+                // Tests odd -> even order and even -> odd order for better coverage.
+                'json.value': { in: [1, 4, 2, 3] },
+              },
+            ],
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = docs.map(({ json }) => json.value)
+
+        expect(docIDs).not.toContain(1)
+        expect(docIDs).toContain(2)
+        expect(docIDs).not.toContain(3)
+        expect(docIDs).toContain(4)
+      })
+
+      test('should query deeply', async ({ payload }) => {
+        if (payload.db.name === 'sqlite') {
+          return
+        }
+
+        const json_1 = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: {
+              array: [
+                {
+                  text: 'some-text',
+                  object: {
+                    text: 'deep-text',
+                    array: [10],
+                  },
+                },
+              ],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        const { docs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            and: [
+              {
+                'json.array.text': {
+                  equals: 'some-text',
+                },
+              },
+              {
+                'json.array.object.text': {
+                  equals: 'deep-text',
+                },
+              },
+              {
+                'json.array.object.array': {
+                  in: [10, 20],
+                },
+              },
+              {
+                'json.array.object.array': {
+                  exists: true,
+                },
+              },
+              {
+                'json.array.object.notexists': {
+                  exists: false,
+                },
+              },
+            ],
+          },
+          overrideAccess: true,
+        })
+
+        expect(docs).toHaveLength(1)
+        expect(docs[0].id).toBe(json_1.id)
+      })
+
+      test('should query 2-level nested object properties', async ({ payload }) => {
+        const docId = '42'
+        const collectionSlug = 'posts'
+
+        const matchingDoc = await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { doc: { value: docId, relationTo: collectionSlug } },
+          },
+          overrideAccess: true,
+        })
+
+        // different ID, same relationTo — should NOT match the and query
+        await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { doc: { value: '99', relationTo: collectionSlug } },
+          },
+          overrideAccess: true,
+        })
+
+        // same ID, different relationTo — should NOT match the and query
+        await payload.create({
+          collection: 'json-fields',
+          data: {
+            json: { doc: { value: docId, relationTo: 'other' } },
+          },
+          overrideAccess: true,
+        })
+
+        const { docs: equalsDocs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.doc.value': { equals: docId },
+          },
+          overrideAccess: true,
+        })
+
+        expect(equalsDocs.map(({ id }) => id)).toContain(matchingDoc.id)
+
+        const { docs: existsDocs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.doc.value': { exists: true },
+          },
+          overrideAccess: true,
+        })
+
+        expect(existsDocs.map(({ id }) => id)).toContain(matchingDoc.id)
+
+        // mirrors the pattern from scheduled jobs frontend query:
+        // where[and][2][input.doc.value][equals] = id
+        // where[and][3][input.doc.relationTo][equals] = collectionSlug
+        const { docs: andDocs } = await payload.find({
+          collection: 'json-fields',
+          where: {
+            and: [
+              { 'json.doc.value': { equals: docId } },
+              { 'json.doc.relationTo': { equals: collectionSlug } },
+            ],
+          },
+          overrideAccess: true,
+        })
+
+        expect(andDocs).toHaveLength(1)
+        expect(andDocs[0]?.id).toBe(matchingDoc.id)
+      })
+
+      test('should disallow unsafe query paths', async ({ payload }) => {
+        await expect(
+          payload.find({
+            collection: 'json-fields',
+            where: {
+              'json.select from': { equals: 5 },
+            },
+            overrideAccess: true,
+          }),
+        ).rejects.toBeTruthy()
+
+        await expect(
+          payload.find({
+            collection: 'json-fields',
+            where: {
+              'json."unsafe"': { equals: 5 },
+            },
+            overrideAccess: true,
+          }),
+        ).rejects.toBeTruthy()
+
+        await expect(
+          payload.find({
+            collection: 'json-fields',
+            where: {
+              'json.(unsafe"': { equals: 5 },
+            },
+            overrideAccess: true,
+          }),
+        ).rejects.toBeTruthy()
+
+        await expect(
+          payload.find({
+            collection: 'json-fields',
+            where: {
+              'json.unsafe="': { equals: 5 },
+            },
+            overrideAccess: true,
+          }),
+        ).rejects.toBeTruthy()
+      })
+
+      test.options(
+        'should disallow unsafe query values',
+        { db: 'drizzle' },
+        async ({ payload }) => {
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                'json.value': { equals: 'select(' },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                'json.value': { equals: '"unsafe' },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                'json.value': { equals: `'unsafe` },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                'json.value': { equals: `unsafe\\` },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                'json.value': { equals: `unsafe=` },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+        },
+      )
+
+      test('should reject disallowed characters in JSON field path segments', async ({
+        payload,
+      }) => {
+        // Path segments in JSON queries must only contain word characters.
+        const badPaths = [
+          "json.key'bad",
+          'json.key"bad',
+          'json.key;bad',
+          'json.key(bad',
+          'json.key)bad',
+        ]
+
+        for (const path of badPaths) {
+          await expect(
+            payload.find({
+              collection: 'json-fields',
+              where: {
+                [path]: { equals: 'test' },
+              },
+              overrideAccess: true,
+            }),
+          ).rejects.toBeTruthy()
+        }
+      })
+
+      test('should accept valid path segments in JSON field queries', async ({ payload }) => {
+        const result = await payload.find({
+          collection: 'json-fields',
+          where: {
+            'json.valid_key': { equals: 'test' },
+          },
+          overrideAccess: true,
+        })
+
+        expect(result.docs).toBeDefined()
+      })
+    })
+  })
+
+  test.describe('relationships', () => {
+    test('should not crash if querying with empty in operator', async ({ payload }) => {
+      const query = await payload.find({
+        collection: 'relationship-fields',
+        where: {
+          'relationship.value': {
+            in: [],
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(query.docs).toBeDefined()
+    })
+
+    test.describe('querying', () => {
+      const createdIDs: (number | string)[] = []
+
+      test.afterEach(async ({ payload }) => {
+        for (const id of createdIDs) {
+          await payload.delete({ collection: 'relationship-fields', id, overrideAccess: true })
+        }
+        createdIDs.length = 0
+      })
+
+      test('should query non-polymorphic hasMany - equals', async ({ payload }) => {
+        // TODO: Remove this check once we implement exact array equality for SQL adapters
+        // Currently only MongoDB supports array equals/not_equals on hasMany relationships
+        if (payload.db.name !== 'mongoose') {
+          return
+        }
+
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        const text2 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 2' },
+          overrideAccess: true,
+        })
+
+        const relDoc = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationshipHasMany: [text1.id, text2.id],
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc.id)
+
+        // Query with exact array match [text1.id, text2.id]
+        const result = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationshipHasMany: {
+              equals: [text1.id, text2.id],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(result.docs).toHaveLength(1)
+        expect(result.docs[0]?.id).toBe(relDoc.id)
+
+        // Verify that querying with subset [text1.id] returns no results (not exact match)
+        const noMatchResult = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationshipHasMany: {
+              equals: [text1.id],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(noMatchResult.docs).toHaveLength(0)
+      })
+
+      test('should query polymorphic hasMany - equals', async ({ payload }) => {
+        // TODO: Remove this check once we implement exact array equality for SQL adapters
+        // Currently only MongoDB supports array equals/not_equals on hasMany relationships
+        if (payload.db.name !== 'mongoose') {
+          return
+        }
+
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        // @ts-expect-error - items field typing issue
+        const array1 = await payload.create({
+          collection: 'array-fields',
+          data: { items: [{ text: 'Array 1' }] },
+          overrideAccess: true,
+        })
+
+        const relDoc = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationHasManyPolymorphic: [
+              { relationTo: 'text-fields', value: text1.id },
+              { relationTo: 'array-fields', value: array1.id },
+            ],
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc.id)
+
+        // Query with exact array match [text-fields:text1, array-fields:array1]
+        const result = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationHasManyPolymorphic: {
+              equals: [
+                { relationTo: 'text-fields', value: text1.id },
+                { relationTo: 'array-fields', value: array1.id },
+              ],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(result.docs).toHaveLength(1)
+        expect(result.docs[0]?.id).toBe(relDoc.id)
+
+        // Verify that querying with subset [text-fields:text1] returns no results (not exact match)
+        const noMatchResult = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationHasManyPolymorphic: {
+              equals: [{ relationTo: 'text-fields', value: text1.id }],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        expect(noMatchResult.docs).toHaveLength(0)
+      })
+
+      test('should query non-polymorphic hasMany - not_equals', async ({ payload }) => {
+        // TODO: Remove this check once we implement exact array equality for SQL adapters
+        // Currently only MongoDB supports array equals/not_equals on hasMany relationships
+        if (payload.db.name !== 'mongoose') {
+          return
+        }
+
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        const text2 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 2' },
+          overrideAccess: true,
+        })
+
+        const text3 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 3' },
+          overrideAccess: true,
+        })
+
+        const relDoc1 = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationshipHasMany: [text1.id, text2.id],
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc1.id)
+
+        const relDoc2 = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationshipHasMany: [text3.id],
+            relationship: { relationTo: 'text-fields', value: text3.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc2.id)
+
+        // Query with not_equals [text1.id, text2.id] should exclude relDoc1 and include relDoc2
+        const result = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationshipHasMany: {
+              not_equals: [text1.id, text2.id],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = result.docs.map((doc) => doc.id)
+
+        expect(docIDs).toContain(relDoc2.id)
+        expect(docIDs).not.toContain(relDoc1.id)
+
+        // Query with not_equals [text3.id] should exclude relDoc2 and include relDoc1
+        const noMatchResult = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationshipHasMany: {
+              not_equals: [text3.id],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        const noMatchDocIDs = noMatchResult.docs.map((doc) => doc.id)
+
+        expect(noMatchDocIDs).toContain(relDoc1.id)
+        expect(noMatchDocIDs).not.toContain(relDoc2.id)
+      })
+
+      test('should query polymorphic hasMany - not_equals', async ({ payload }) => {
+        // TODO: Remove this check once we implement exact array equality for SQL adapters
+        // Currently only MongoDB supports array equals/not_equals on hasMany relationships
+        if (payload.db.name !== 'mongoose') {
+          return
+        }
+
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        // @ts-expect-error - items field typing issue
+        const array1 = await payload.create({
+          collection: 'array-fields',
+          data: { items: [{ text: 'Array 1' }] },
+          overrideAccess: true,
+        })
+
+        const text2 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 2' },
+          overrideAccess: true,
+        })
+
+        const relDoc1 = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationHasManyPolymorphic: [
+              { relationTo: 'text-fields', value: text1.id },
+              { relationTo: 'array-fields', value: array1.id },
+            ],
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc1.id)
+
+        const relDoc2 = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationHasManyPolymorphic: [{ relationTo: 'text-fields', value: text2.id }],
+            relationship: { relationTo: 'text-fields', value: text2.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc2.id)
+
+        // Query with not_equals [text-fields:text1, array-fields:array1] should exclude relDoc1 and include relDoc2
+        const result = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationHasManyPolymorphic: {
+              not_equals: [
+                { relationTo: 'text-fields', value: text1.id },
+                { relationTo: 'array-fields', value: array1.id },
+              ],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        const docIDs = result.docs.map((doc) => doc.id)
+
+        expect(docIDs).toContain(relDoc2.id)
+        expect(docIDs).not.toContain(relDoc1.id)
+
+        // Query with not_equals [text-fields:text2] should exclude relDoc2 and include relDoc1
+        const noMatchResult = await payload.find({
+          collection: 'relationship-fields',
+          where: {
+            relationHasManyPolymorphic: {
+              not_equals: [{ relationTo: 'text-fields', value: text2.id }],
+            },
+          },
+          overrideAccess: true,
+        })
+
+        const noMatchDocIDs = noMatchResult.docs.map((doc) => doc.id)
+
+        expect(noMatchDocIDs).toContain(relDoc1.id)
+        expect(noMatchDocIDs).not.toContain(relDoc2.id)
+      })
+
+      test('should not throw when querying hasMany relationship with equals array', async ({
+        payload,
+      }) => {
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        const relDoc = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationshipHasMany: [text1.id],
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDoc.id)
+
+        try {
+          const equalsResult = await payload.find({
+            collection: 'relationship-fields',
+            where: {
+              relationshipHasMany: {
+                equals: [text1.id],
+              },
+            },
+            overrideAccess: true,
+          })
+
+          expect(equalsResult.docs.some((doc) => doc.id === relDoc.id)).toBe(true)
+
+          const notEqualsResult = await payload.find({
+            collection: 'relationship-fields',
+            where: {
+              relationshipHasMany: {
+                not_equals: [text1.id],
+              },
+            },
+            overrideAccess: true,
+          })
+
+          expect(notEqualsResult.docs.some((doc) => doc.id === relDoc.id)).toBe(false)
+        } finally {
+          await payload.delete({ collection: 'text-fields', id: text1.id, overrideAccess: true })
+        }
+      })
+
+      test('should include docs with null relationship when using not_equals with array on non-hasMany field', async ({
+        payload,
+      }) => {
+        // Only SQL adapters are affected - MongoDB handles NOT IN / NULL differently
+        if (payload.db.name === 'mongoose') {
+          return
+        }
+
+        const text1 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 1' },
+          overrideAccess: true,
+        })
+
+        const text2 = await payload.create({
+          collection: 'text-fields',
+          data: { text: 'Text 2' },
+          overrideAccess: true,
+        })
+
+        // relDocWithNull has no relationshipDrawer set (null)
+        const relDocWithNull = await payload.create({
+          collection: 'relationship-fields',
+          data: {
+            relationship: { relationTo: 'text-fields', value: text1.id },
+          },
+          overrideAccess: true,
+        })
+        createdIDs.push(relDocWithNull.id)
+
+        try {
+          // Querying not_equals: [text2.id] should include relDocWithNull because
+          // its relationshipDrawer is null, which is "not equal to text2.id".
+          // Without OR IS NULL in the SQL, NULL NOT IN (text2.id) evaluates to NULL
+          // (not TRUE), so the document is incorrectly excluded.
+          const result = await payload.find({
+            collection: 'relationship-fields',
+            where: {
+              relationshipDrawer: {
+                not_equals: [text2.id],
+              },
+            },
+            overrideAccess: true,
+          })
+
+          expect(result.docs.some((doc) => doc.id === relDocWithNull.id)).toBe(true)
+        } finally {
+          await payload.delete({ collection: 'text-fields', id: text1.id, overrideAccess: true })
+          await payload.delete({ collection: 'text-fields', id: text2.id, overrideAccess: true })
+        }
+      })
+    })
+  })
+
+  test.describe('clearable fields - exists', () => {
+    test('exists should not return null values', async ({ payload }) => {
+      const { id } = await payload.create({
+        collection: 'select-fields',
+        data: {
+          select: 'one',
+        },
+        overrideAccess: true,
+      })
+
+      const existsResult = await payload.find({
+        collection: 'select-fields',
+        where: {
+          id: { equals: id },
+          select: { exists: true },
+        },
+        overrideAccess: true,
+      })
+
+      expect(existsResult.docs).toHaveLength(1)
+
+      const existsFalseResult = await payload.find({
+        collection: 'select-fields',
+        where: {
+          id: { equals: id },
+          select: { exists: false },
+        },
+        overrideAccess: true,
+      })
+
+      expect(existsFalseResult.docs).toHaveLength(0)
+
+      await payload.update({
+        id,
+        collection: 'select-fields',
+        data: {
+          select: null,
+        },
+        overrideAccess: true,
+      })
+
+      const existsTrueResult = await payload.find({
+        collection: 'select-fields',
+        where: {
+          id: { equals: id },
+          select: { exists: true },
+        },
+        overrideAccess: true,
+      })
+
+      expect(existsTrueResult.docs).toHaveLength(0)
+
+      const result = await payload.find({
+        collection: 'select-fields',
+        where: {
+          id: { equals: id },
+          select: { exists: false },
+        },
+        overrideAccess: true,
+      })
+
+      expect(result.docs).toHaveLength(1)
+    })
+  })
+
+  test.describe('Custom ID Nested', () => {
+    const createdIDs: number[] = []
+
+    test.afterEach(async ({ payload }) => {
+      for (const id of createdIDs) {
+        await payload.delete({
+          collection: customIDNestedSlug,
+          id,
+          overrideAccess: true,
+        })
+      }
+      createdIDs.length = 0
+    })
+
+    test('should create document with numeric custom ID nested in tabs', async ({ payload }) => {
+      const customID = 12345
+      createdIDs.push(customID)
+
+      const doc = await payload.create({
+        collection: customIDNestedSlug,
+        data: {
+          id: customID,
+          title: 'Test Document',
+          description: 'Testing nested custom ID field',
+        },
+        overrideAccess: true,
+      })
+
+      expect(doc.id).toBe(customID)
+      expect(doc.title).toBe('Test Document')
+    })
+
+    test('should retrieve document by numeric custom ID', async ({ payload }) => {
+      const customID = 67890
+      createdIDs.push(customID)
+
+      await payload.create({
+        collection: customIDNestedSlug,
+        data: {
+          id: customID,
+          title: 'Another Test',
+        },
+        overrideAccess: true,
+      })
+
+      const retrieved = await payload.findByID({
+        collection: customIDNestedSlug,
+        id: customID,
+        overrideAccess: true,
+      })
+
+      expect(retrieved.id).toBe(customID)
+      expect(retrieved.title).toBe('Another Test')
+    })
+
+    test('should update document with numeric custom ID', async ({ payload }) => {
+      const customID = 99999
+      createdIDs.push(customID)
+
+      await payload.create({
+        collection: customIDNestedSlug,
+        data: {
+          id: customID,
+          title: 'Original Title',
+        },
+        overrideAccess: true,
+      })
+
+      const updated = await payload.update({
+        collection: customIDNestedSlug,
+        id: customID,
+        data: {
+          title: 'Updated Title',
+        },
+        overrideAccess: true,
+      })
+
+      expect(updated.id).toBe(customID)
+      expect(updated.title).toBe('Updated Title')
+    })
+  })
+
+  test.describe('date fields with timezones', () => {
+    test('should create document with UTC offset timezone', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+          dateWithOffsetTimezone_tz: '+05:30',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithOffsetTimezone).toEqual('2027-08-12T04:30:00.000Z')
+      expect(doc.dateWithOffsetTimezone_tz).toEqual('+05:30')
+    })
+
+    test('should update timezone from IANA to offset', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithMixedTimezones: '2027-08-12T14:00:00.000Z',
+          dateWithMixedTimezones_tz: 'America/New_York',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithMixedTimezones_tz).toEqual('America/New_York')
+
+      const updated = await payload.update({
+        id: doc.id,
+        collection: dateFieldsSlug,
+        data: {
+          dateWithMixedTimezones_tz: '+05:30',
+        },
+        overrideAccess: true,
+      })
+
+      expect(updated.dateWithMixedTimezones_tz).toEqual('+05:30')
+    })
+
+    test('should query documents by timezone field', async ({ payload }) => {
+      await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+          dateWithOffsetTimezone_tz: '+05:30',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T08:00:00.000Z',
+          dateWithOffsetTimezone_tz: '-08:00',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      const indiaTimezoneResults = await payload.find({
+        collection: dateFieldsSlug,
+        where: {
+          dateWithOffsetTimezone_tz: {
+            equals: '+05:30',
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expect(indiaTimezoneResults.docs.length).toBeGreaterThanOrEqual(1)
+      expect(
+        indiaTimezoneResults.docs.every((doc) => doc.dateWithOffsetTimezone_tz === '+05:30'),
+      ).toBe(true)
+    })
+
+    test('should store mixed IANA and offset timezones correctly', async ({ payload }) => {
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithMixedTimezones: '2027-08-12T14:00:00.000Z',
+          dateWithMixedTimezones_tz: 'America/New_York',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithMixedTimezones_tz).toEqual('America/New_York')
+
+      // Create another doc with offset timezone
+      const doc2 = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithMixedTimezones: '2027-08-12T04:30:00.000Z',
+          dateWithMixedTimezones_tz: '+05:30',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc2.dateWithMixedTimezones_tz).toEqual('+05:30')
+    })
+
+    test('should handle different offset formats consistently', async ({ payload }) => {
+      // Test HH:mm format
+      const doc1 = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+          dateWithOffsetTimezone_tz: '+05:30',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc1.dateWithOffsetTimezone_tz).toEqual('+05:30')
+
+      // Test negative offset
+      const doc2 = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T16:00:00.000Z',
+          dateWithOffsetTimezone_tz: '-08:00',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc2.dateWithOffsetTimezone_tz).toEqual('-08:00')
+
+      // Test zero offset
+      const doc3 = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithOffsetTimezone: '2027-08-12T10:00:00.000Z',
+          dateWithOffsetTimezone_tz: '+00:00',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc3.dateWithOffsetTimezone_tz).toEqual('+00:00')
+    })
+
+    test.describe('GraphQL timezone operations', () => {
+      // Note: GraphQL enums serialize to their NAME (e.g., '_TZOFFSET_PLUS_05_30'), not their VALUE (e.g., '+05:30')
+      // This is standard GraphQL behavior. UTC offsets are transformed to GraphQL-safe names:
+      // +05:30 → _TZOFFSET_PLUS_05_30, -08:00 → _TZOFFSET_MINUS_08_00, America/New_York → America_New_York
+
+      test('should read UTC offset timezone via GraphQL query', async ({ payload, restClient }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+            dateWithOffsetTimezone_tz: '+05:30',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const query = `
+          query {
+            DateField(id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id}) {
+              dateWithOffsetTimezone
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({ body: JSON.stringify({ query }) })
+        const result = await response.json()
+
+        if (result.errors) {
+          console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2))
+        }
+        expect(result.errors).toBeUndefined()
+        expect(result.data.DateField.dateWithOffsetTimezone).toEqual('2027-08-12T04:30:00.000Z')
+        // GraphQL returns enum NAME, not VALUE
+        expect(result.data.DateField.dateWithOffsetTimezone_tz).toEqual('_TZOFFSET_PLUS_05_30')
+      })
+
+      test('should read negative UTC offset timezone via GraphQL query', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithOffsetTimezone: '2027-08-12T16:00:00.000Z',
+            dateWithOffsetTimezone_tz: '-08:00',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const query = `
+          query {
+            DateField(id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id}) {
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({ body: JSON.stringify({ query }) })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data.DateField.dateWithOffsetTimezone_tz).toEqual('_TZOFFSET_MINUS_08_00')
+      })
+
+      test('should read mixed IANA and offset timezones via GraphQL query', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithMixedTimezones: '2027-08-12T14:00:00.000Z',
+            dateWithMixedTimezones_tz: 'America/New_York',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const query = `
+          query {
+            DateField(id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id}) {
+              dateWithMixedTimezones
+              dateWithMixedTimezones_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({ body: JSON.stringify({ query }) })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        // GraphQL returns enum NAME (America_New_York), not VALUE (America/New_York)
+        expect(result.data.DateField.dateWithMixedTimezones_tz).toEqual('America_New_York')
+      })
+
+      test('should create document with UTC offset timezone via GraphQL mutation', async ({
+        restClient,
+      }) => {
+        const mutation = `
+          mutation {
+            createDateField(
+              data: {
+                default: "2027-08-12T10:00:00.000Z",
+                dayAndTimeWithTimezone: "2027-08-12T01:00:00.000Z",
+                dayAndTimeWithTimezone_tz: Asia_Tokyo,
+                dayAndTimeWithTimezoneRequired_tz: America_New_York,
+                dateWithOffsetTimezone: "2027-08-12T04:30:00.000Z",
+                dateWithOffsetTimezone_tz: _TZOFFSET_PLUS_05_30
+              }
+            ) {
+              id
+              dateWithOffsetTimezone
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        if (result.errors) {
+          console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2))
+        }
+        expect(result.errors).toBeUndefined()
+        expect(result.data.createDateField.dateWithOffsetTimezone_tz).toEqual(
+          '_TZOFFSET_PLUS_05_30',
+        )
+      })
+
+      test('should create document with negative UTC offset via GraphQL mutation', async ({
+        restClient,
+      }) => {
+        const mutation = `
+          mutation {
+            createDateField(
+              data: {
+                default: "2027-08-12T10:00:00.000Z",
+                dayAndTimeWithTimezone: "2027-08-12T01:00:00.000Z",
+                dayAndTimeWithTimezone_tz: Asia_Tokyo,
+                dayAndTimeWithTimezoneRequired_tz: America_New_York,
+                dateWithOffsetTimezone: "2027-08-12T16:00:00.000Z",
+                dateWithOffsetTimezone_tz: _TZOFFSET_MINUS_08_00
+              }
+            ) {
+              id
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        if (result.errors) {
+          console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2))
+        }
+        expect(result.errors).toBeUndefined()
+        expect(result.data.createDateField.dateWithOffsetTimezone_tz).toEqual(
+          '_TZOFFSET_MINUS_08_00',
+        )
+      })
+
+      test('should update timezone from one offset to another via GraphQL mutation', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+            dateWithOffsetTimezone_tz: '+05:30',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const mutation = `
+          mutation {
+            updateDateField(
+              id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id},
+              data: {
+                dateWithOffsetTimezone_tz: _TZOFFSET_MINUS_08_00
+              }
+            ) {
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data.updateDateField.dateWithOffsetTimezone_tz).toEqual(
+          '_TZOFFSET_MINUS_08_00',
+        )
+      })
+
+      test('should update mixed timezone field from IANA to offset via GraphQL mutation', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithMixedTimezones: '2027-08-12T14:00:00.000Z',
+            dateWithMixedTimezones_tz: 'America/New_York',
+          },
+          overrideAccess: true,
+        })
+
+        const mutation = `
+          mutation {
+            updateDateField(
+              id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id},
+              data: {
+                dateWithMixedTimezones_tz: _TZOFFSET_PLUS_05_30
+              }
+            ) {
+              dateWithMixedTimezones_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data.updateDateField.dateWithMixedTimezones_tz).toEqual(
+          '_TZOFFSET_PLUS_05_30',
+        )
+      })
+
+      test('should update mixed timezone field from offset to IANA via GraphQL mutation', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithMixedTimezones: '2027-08-12T04:30:00.000Z',
+            dateWithMixedTimezones_tz: '+05:30',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const mutation = `
+          mutation {
+            updateDateField(
+              id: ${typeof doc.id === 'string' ? `"${doc.id}"` : doc.id},
+              data: {
+                dateWithMixedTimezones_tz: America_New_York
+              }
+            ) {
+              dateWithMixedTimezones_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data.updateDateField.dateWithMixedTimezones_tz).toEqual('America_New_York')
+      })
+
+      test('should query documents by offset timezone field via GraphQL', async ({
+        payload,
+        restClient,
+      }) => {
+        // Create documents with different timezones
+        await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithOffsetTimezone: '2027-08-12T04:30:00.000Z',
+            dateWithOffsetTimezone_tz: '+05:30',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        await payload.create({
+          collection: dateFieldsSlug,
+          data: {
+            ...dateDoc,
+            dateWithOffsetTimezone: '2027-08-12T16:00:00.000Z',
+            dateWithOffsetTimezone_tz: '-08:00',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const query = `
+          query {
+            DateFields(where: { dateWithOffsetTimezone_tz: { equals: _TZOFFSET_PLUS_05_30 } }) {
+              docs {
+                dateWithOffsetTimezone_tz
+              }
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({ body: JSON.stringify({ query }) })
+        const result = await response.json()
+
+        expect(result.errors).toBeUndefined()
+        expect(result.data.DateFields.docs.length).toBeGreaterThanOrEqual(1)
+        expect(
+          result.data.DateFields.docs.every(
+            (doc: { dateWithOffsetTimezone_tz: string }) =>
+              doc.dateWithOffsetTimezone_tz === '_TZOFFSET_PLUS_05_30',
+          ),
+        ).toBe(true)
+      })
+
+      test('should handle UTC+00:00 offset via GraphQL', async ({ restClient }) => {
+        const mutation = `
+          mutation {
+            createDateField(
+              data: {
+                default: "2027-08-12T10:00:00.000Z",
+                dayAndTimeWithTimezone: "2027-08-12T01:00:00.000Z",
+                dayAndTimeWithTimezone_tz: Asia_Tokyo,
+                dayAndTimeWithTimezoneRequired_tz: America_New_York,
+                dateWithOffsetTimezone: "2027-08-12T10:00:00.000Z",
+                dateWithOffsetTimezone_tz: _TZOFFSET_PLUS_00_00
+              }
+            ) {
+              id
+              dateWithOffsetTimezone_tz
+            }
+          }
+        `
+
+        const response = await restClient.GRAPHQL_POST({
+          body: JSON.stringify({ query: mutation }),
+        })
+        const result = await response.json()
+
+        if (result.errors) {
+          console.error('GraphQL errors:', JSON.stringify(result.errors, null, 2))
+        }
+        expect(result.errors).toBeUndefined()
+        expect(result.data.createDateField.dateWithOffsetTimezone_tz).toEqual(
+          '_TZOFFSET_PLUS_00_00',
+        )
+      })
+    })
+
+    test('should apply timezone override function to customize the field', async ({ payload }) => {
+      // The dateWithTimezoneWithDisabledColumns field has an override that sets disabled.column: true
+      // We can verify this by checking the collection config has the modified field
+      const dateCollection = payload.collections[dateFieldsSlug]
+      const fields = dateCollection.config.flattenedFields
+
+      const timezoneField = fields.find((f) => f.name === 'dateWithTimezoneWithDisabledColumns_tz')
+      expect(timezoneField).toBeDefined()
+      expect(timezoneField?.type).toEqual('select')
+      expect((timezoneField?.admin?.disabled as { column?: boolean })?.column).toBe(true)
+      expect(timezoneField?.admin?.description).toEqual(
+        'This timezone field was customized via override',
+      )
+
+      // Also verify it still works for creating/storing data
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dateDoc,
+          dateWithTimezoneWithDisabledColumns: '2027-08-12T10:00:00.000Z',
+          dateWithTimezoneWithDisabledColumns_tz: 'America/New_York',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithTimezoneWithDisabledColumns_tz).toEqual('America/New_York')
+    })
+
+    test('should generate timezone field label from parent date field label', ({ payload }) => {
+      const dateCollection = payload.collections[dateFieldsSlug]
+      const fields = dateCollection.config.flattenedFields
+
+      // Field with no explicit label - should use toWords(name) for timezone label
+      const defaultTzField = fields.find((f) => f.name === 'defaultWithTimezone_tz')
+      expect(defaultTzField?.label).toEqual('Default With Timezone Tz')
+
+      // Field with disableListColumn override - label should still be generated
+      const disabledColumnsTzField = fields.find(
+        (f) => f.name === 'dateWithTimezoneWithDisabledColumns_tz',
+      )
+      expect(disabledColumnsTzField?.label).toEqual('Date With Timezone With Disabled Columns Tz')
+    })
+
+    test('should not silently default timezone to UTC when no defaultTimezone is configured', async ({
+      payload,
+    }) => {
+      const { dateWithTimezoneNoDefault_tz: _, ...dataWithoutNoDefaultTz } = dateDoc
+
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dataWithoutNoDefaultTz,
+          dateWithTimezoneNoDefault: '2027-08-12T14:00:00.000Z',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithTimezoneNoDefault_tz).toBeFalsy()
+    })
+
+    test('should use configured defaultTimezone when set', async ({ payload }) => {
+      const { dateWithMixedTimezones_tz: _, ...dataWithoutMixedTz } = dateDoc
+
+      const doc = await payload.create({
+        collection: dateFieldsSlug,
+        data: {
+          ...dataWithoutMixedTz,
+          dateWithMixedTimezones: '2027-08-12T14:00:00.000Z',
+        },
+        draft: true,
+        overrideAccess: true,
+      })
+
+      expect(doc.dateWithMixedTimezones_tz).toEqual('America/New_York')
+    })
+  })
+})

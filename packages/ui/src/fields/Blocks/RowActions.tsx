@@ -1,0 +1,96 @@
+'use client'
+import type { ClientBlock, ClientField, Labels } from 'payload'
+
+import { useModal } from '@faceless-ui/modal'
+import { getTranslation } from '@payloadcms/translations'
+import React from 'react'
+
+import type { ClipboardPasteEligibilityArgs } from '../../elements/ClipboardAction/types.js'
+
+import { ArrayAction } from '../../elements/ArrayAction/index.js'
+import { useDrawerSlug } from '../../elements/Drawer/useDrawerSlug.js'
+import { useTranslation } from '../../providers/Translation/index.js'
+import { BlocksDrawer } from './BlocksDrawer/index.js'
+
+export const RowActions: React.FC<{
+  readonly addRow: (rowIndex: number, blockType: string) => Promise<void> | void
+  readonly blocks: (ClientBlock | string)[]
+  readonly blockType: string
+  readonly copyRow: (rowIndex: number) => void
+  readonly duplicateRow: (rowIndex: number, blockType: string) => void
+  readonly fields: ClientField[]
+  readonly hasMaxRows?: boolean
+  readonly isSortable?: boolean
+  readonly labels: Labels
+  readonly moveRow: (fromIndex: number, toIndex: number) => void
+  readonly pasteData: ClipboardPasteEligibilityArgs
+  readonly pasteRow: (rowIndex: number) => void
+  readonly pasteRowBelow: (rowIndex: number) => void
+  readonly removeRow: (rowIndex: number) => void
+  readonly rowCount: number
+  readonly rowIndex: number
+}> = (props) => {
+  const {
+    addRow,
+    blocks,
+    blockType,
+    copyRow,
+    duplicateRow,
+    hasMaxRows,
+    isSortable,
+    labels,
+    moveRow,
+    pasteData,
+    pasteRow,
+    pasteRowBelow,
+    removeRow,
+    rowCount,
+    rowIndex,
+  } = props
+
+  const { closeModal, openModal } = useModal()
+  const { i18n } = useTranslation()
+  const drawerSlug = useDrawerSlug('blocks-drawer')
+  const block = blocks.find(
+    (candidate): candidate is ClientBlock =>
+      typeof candidate !== 'string' && candidate.slug === blockType,
+  )
+  const rowLabel = `${block ? getTranslation(block.labels.singular, i18n) : blockType} ${rowIndex + 1}`
+
+  const [indexToAdd, setIndexToAdd] = React.useState<null | number>(null)
+
+  return (
+    <React.Fragment>
+      <BlocksDrawer
+        addRow={(_, rowBlockType) => {
+          if (typeof addRow === 'function') {
+            void addRow(indexToAdd, rowBlockType)
+          }
+          closeModal(drawerSlug)
+        }}
+        addRowIndex={rowIndex}
+        blocks={blocks}
+        drawerSlug={drawerSlug}
+        labels={labels}
+      />
+      <ArrayAction
+        addRow={(index) => {
+          setIndexToAdd(index)
+          openModal(drawerSlug)
+        }}
+        copyRow={copyRow}
+        duplicateRow={() => duplicateRow(rowIndex, blockType)}
+        hasMaxRows={hasMaxRows}
+        index={rowIndex}
+        isSortable={isSortable}
+        label={rowLabel}
+        moveRow={moveRow}
+        pasteData={pasteData}
+        pasteRow={pasteRow}
+        pasteRowBelow={pasteRowBelow}
+        removeRow={removeRow}
+        rowCount={rowCount}
+      />
+    </React.Fragment>
+  )
+}

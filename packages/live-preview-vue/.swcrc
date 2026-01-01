@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/swcrc",
+  "exclude": "\\.spec\\.[^/\\\\]+$",
+  "sourceMaps": "inline",
+  "jsc": {
+    "target": "esnext",
+    "parser": {
+      "syntax": "typescript",
+      "tsx": true,
+      "dts": true
+    }
+  },
+  "module": {
+    "type": "es6"
+  }
+}

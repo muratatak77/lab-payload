@@ -1,0 +1,511 @@
+import type { CollectionConfig, TypeWithID } from '../collections/config/types.js'
+import type { PayloadComponent } from '../config/types.js'
+import type { UploadCollectionSlug } from '../index.js'
+import type { PayloadRequest } from '../types/index.js'
+import type { StagedObject } from './fileVersioning/fileOperationManager.js'
+import type { StoredFileRole } from './fileVersioning/types.js'
+
+export type OriginalFileData = {
+  _objectKey?: string
+  filename: string
+  filesize: number
+  height?: null | number
+  mimeType: string
+  prefix?: string
+  url: string
+  width?: null | number
+}
+
+export type FileSize = {
+  _objectKey?: string
+  filename: null | string
+  filesize: null | number
+  height: null | number
+  mimeType: null | string
+  prefix?: string
+  url: null | string
+  width: null | number
+}
+
+export type FileSizes = {
+  [size: string]: FileSize
+}
+
+export type FileData = {
+  _objectKey?: string
+  filename: string
+  filesize: number
+  focalX?: number
+  focalY?: number
+  height: number
+  mimeType: string
+  original?: null | OriginalFileData
+  prefix?: string
+  tempFilePath?: string
+  url?: string
+  variants: FileSizes
+  width: number
+}
+
+export type ProbedImageSize = {
+  height: number
+  width: number
+}
+
+export type GenerateImageName = (args: {
+  extension: string
+  height: number
+  originalName: string
+  sizeName: string
+  width: number
+}) => string
+
+type ImageSizeBase = {
+  /**
+   * Admin UI options that control how this image size appears in list views.
+   */
+  admin?: {
+    /**
+     * Controls visibility of this image size in the collection list view.
+     * Defaults to hiding the image size from columns, filters, and group-by to reduce noise.
+     *
+     * - `column` — whether to hide this size from selectable list columns. @default false
+     * - `filter` — whether to hide this size from filter options. @default false
+     * - `groupBy` — whether to hide this size from group-by options. @default false
+     */
+    disabled?: {
+      column?: boolean
+      filter?: boolean
+      groupBy?: boolean
+    }
+  }
+  /**
+   * Generate a custom name for the file of this image size.
+   */
+  generateImageName?: GenerateImageName
+  name: string
+}
+
+/**
+ * Interface to be module-augmented by image processing providers.
+ *
+ * When no provider is registered, ImageSize carries no processor-specific options.
+ * When one or more providers are registered (e.g. `@payloadcms/transformer-sharp`),
+ * ImageSize uses the union of their registered options instead.
+ *
+ * @example
+ * declare module 'payload' {
+ *   interface RegisteredImageSizeOptions {
+ *     myProvider: MyProviderImageSizeOptions
+ *   }
+ * }
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- Intentionally empty so image processing providers can augment it.
+export interface RegisteredImageSizeOptions {}
+
+type ImageSizeOptions = keyof RegisteredImageSizeOptions extends never
+  ? unknown
+  : RegisteredImageSizeOptions[keyof RegisteredImageSizeOptions]
+
+export type ImageSize = ImageSizeBase & ImageSizeOptions
+
+export type GetAdminThumbnail = (args: { doc: Record<string, unknown> }) => false | null | string
+
+export type AllowList = Array<{
+  hostname: string
+  pathname?: string
+  port?: string
+  protocol?: 'http' | 'https'
+  search?: string
+}>
+
+export type FileAllowList = Array<{
+  extensions: string[]
+  mimeType: string
+}>
+
+export type UploadFilePreviewClientProps = {
+  filename: string
+  filesize: number
+  /** Resolved URL of the file (data.url). */
+  fileSrc: string
+  height?: number
+  mimeType: string
+  width?: number
+}
+
+type UploadFilePreviewMap = {
+  [mimeTypePattern: string]: PayloadComponent
+}
+
+/**
+ * Distinguishes an ordinary public file request (`read`) from Payload's internal
+ * retrieval of a stored file's bytes for a dynamic transformation (`transform`).
+ * Defaults to `read` when omitted, for third-party handler compatibility.
+ */
+export type FileHandlerOperation = 'read' | 'transform'
+
+type Admin = {
+  components?: {
+    /**
+     * The Controls component to extend the upload controls in the admin panel.
+     */
+    controls?: PayloadComponent[]
+    /**
+     * A custom component to render in place of the default Thumbnail in the upload side panel.
+     *
+     * Can be a single PayloadComponent (renders for all MIME types) or a Record keyed by
+     * MIME type patterns. Pattern resolution priority: exact match → category wildcard
+     * (e.g. `video/*`) → universal fallback (`*`). Falls back to the default Thumbnail
+     * when nothing matches.
+     */
+    filePreview?: PayloadComponent | UploadFilePreviewMap
+  }
+}
+
+export type ExternalFileHeaderFilterContext = {
+  isSameOrigin: boolean
+  url: string
+}
+
+export type UploadConfig = {
+  /**
+   * The adapter name to use for uploads. Used for storage adapter telemetry.
+   * @default undefined
+   */
+  adapter?: string
+  /**
+   * The admin configuration for the upload field.
+   */
+  admin?: Admin
+  /**
+   * Represents an admin thumbnail, which can be either a React component or a string.
+   * - If a string, it should be one of the image size names.
+   * - A function that generates a fully qualified URL for the thumbnail, receives the doc as the only argument.
+   **/
+  adminThumbnail?: GetAdminThumbnail | string
+  /**
+   * Allow restricted file types known to be problematic.
+   * - If set to `true`, it will allow all file types.
+   * - If set to `false`, it will not allow file types and extensions known to be problematic.
+   * - This setting is overriden by the `mimeTypes` option.
+   * @default false
+   */
+  allowRestrictedFileTypes?: boolean
+  /**
+   * Enables bulk upload of files from the list view.
+   * @default true
+   */
+  bulkUpload?: boolean
+  /**
+   * Appends a cache tag to the image URL when fetching the thumbnail in the admin panel. It may be desirable to disable this when hosting via CDNs with strict parameters.
+   *
+   * @default true
+   */
+  cacheTags?: boolean
+  /**
+   * Enables cropping of images.
+   * @default true
+   */
+  crop?: boolean
+  /**
+   * Disable the ability to save files to disk.
+   * @default false
+   */
+  disableLocalStorage?: boolean
+  /**
+   * Enable displaying preview of the uploaded file in Upload fields related to this Collection.
+   * Can be locally overridden by `displayPreview` option in Upload field.
+   * @default false
+   */
+  displayPreview?: boolean
+  /**
+   * Accepts existing headers and returns the headers after filtering or modifying. The optional
+   * context identifies the destination for the current request, including each redirect hop.
+   * `isSameOrigin` is true only when that destination matches a trusted origin established for a
+   * relative file URL.
+   * If using this option, you should handle the removal of any sensitive cookies
+   * (like payload-prefixed cookies) to prevent leaking session information to external
+   * services. By default, Payload automatically filters out payload-prefixed cookies
+   * when this option is NOT defined.
+   *
+   * Useful for adding custom headers to fetch from external providers.
+   * @default undefined
+   */
+  externalFileHeaderFilter?: (
+    headers: Record<string, string>,
+    context?: ExternalFileHeaderFilterContext,
+  ) => Record<string, string>
+  /**
+   * Field slugs to use for a compound index instead of the default filename index.
+   */
+  filenameCompoundIndex?: string[]
+  /** @internal Set by cloudStoragePlugin for versioned uploads; adapters do not implement this. */
+  fileOperations?: {
+    /** Copy before the document changes. Must preserve object metadata and reject an occupied key. */
+    copy: (args: {
+      from: string
+      req: PayloadRequest
+      to: string
+      trackStagedObject: (object: StagedObject) => void
+    }) => Promise<void>
+    delete: (args: { key: string; req: PayloadRequest }) => Promise<void>
+    hasLegacyFile?: (args: {
+      doc: Record<string, unknown>
+      req: PayloadRequest
+    }) => Promise<boolean>
+    move?: (args: {
+      from: string
+      req: PayloadRequest
+      to: string
+      trackStagedObject: (object: StagedObject) => void
+    }) => Promise<void>
+    resolveStorageKey: (args: { _objectKey?: string; filename: string; prefix?: string }) => string
+    stage: (args: {
+      data: Record<string, unknown>
+      files: FileToSave[]
+      req: PayloadRequest
+      trackStagedObject: (object: StagedObject) => void
+    }) => Promise<{ metadata: Record<string, unknown> }>
+  }
+  /**
+   * Require files to be uploaded when creating a document.
+   * @default true
+   */
+  filesRequiredOnCreate?: boolean
+  /**
+   * Enables focal point positioning for image manipulation.
+   * @default true
+   */
+  focalPoint?: boolean
+  /**
+   * Custom handlers to run when a file is fetched.
+   *
+   * - If a handler returns a Response, the response will be sent to the client and no further handlers will be run.
+   * - If a handler returns null, the next handler will be run.
+   * - If no handlers return a response the file will be returned by default.
+   *
+   * @default undefined
+   */
+  handlers?: ((
+    req: PayloadRequest,
+    args: {
+      doc: TypeWithID
+      headers?: Headers
+      params: {
+        collection: string
+        filename: string
+        /**
+         * True when the request asks for the original with `?original=true`. The original and
+         * the main file can share a filename, so the filename alone does not say which to serve.
+         */
+        isOriginal?: boolean
+        /** @default 'read' */
+        operation?: FileHandlerOperation
+        prefix?: string
+        uploadReference?: unknown
+      }
+    },
+  ) => Promise<Response> | Promise<void> | Response | void)[]
+  /**
+   * Whether a registered transformer performs additional processing on the main
+   * uploaded file beyond simple pass-through (e.g. resizing, format conversion,
+   * trimming). Written by a transformer's `init()`; not intended to be set
+   * directly in collection config. Used by the Admin UI to decide whether to
+   * show focal-point controls when no image sizes are configured.
+   * @internal
+   */
+  hasImageAdjustments?: boolean
+  /**
+   * Set to `true` to prevent the admin UI from showing file inputs during document creation, useful for programmatic file generation.
+   */
+  hideFileInputOnCreate?: boolean
+  /**
+   * Set to `true` to prevent the admin UI having a way to remove an existing file while editing.
+   */
+  hideRemoveFile?: boolean
+  /**
+   * Restrict mimeTypes in the file picker. Array of valid mime types or mimetype wildcards
+   * @example ['image/*', 'application/pdf']
+   * @default undefined
+   */
+  mimeTypes?: string[]
+  /**
+   * Ability to modify the response headers fetching a file.
+   * @default undefined
+   */
+  modifyResponseHeaders?: ({ headers }: { headers: Headers }) => Headers | void
+  /**
+   * Controls the behavior of pasting/uploading files from URLs.
+   * If set to `false`, fetching from remote URLs is disabled.
+   * If an `allowList` is provided, server-side fetching will be enabled for specified URLs.
+   *
+   * @default true (client-side fetching enabled)
+   */
+  pasteURL?:
+    | {
+        allowList: AllowList
+      }
+    | false
+  /**
+   *  Skip safe fetch when using server-side fetching for external files from these URLs.
+   *  @default false
+   */
+  skipSafeFetch?: AllowList | boolean
+  /**
+   * The directory to serve static files from. Defaults to collection slug.
+   * @default undefined
+   */
+  staticDir?: string
+  /**
+   * Adapter-provided upload instructions.
+   * @internal
+   */
+  uploadInstructions?: UploadInstructionsCapability
+}
+
+export type UploadInstructionsAccess = (args: {
+  collectionSlug: UploadCollectionSlug
+  req: PayloadRequest
+}) => boolean | Promise<boolean>
+
+export type UploadInstructionsRequest = {
+  collectionSlug: UploadCollectionSlug
+  docPrefix?: string
+  filename: string
+  filesize: number
+  mimeType: string
+}
+
+export type UploadInstructions = {
+  file: {
+    filename: string
+    mimeType: string
+    size: number
+    uploadReference: Record<string, unknown>
+  }
+} & (
+  | {
+      data?: unknown
+      name: string
+      type: 'dispatch'
+    }
+  | {
+      request: {
+        headers?: Record<string, string>
+        method: 'POST' | 'PUT'
+        url: string
+      }
+      type: 'http'
+    }
+)
+
+export type GenerateUploadInstructions = (
+  args: { overrideAccess?: boolean; req: PayloadRequest } & UploadInstructionsRequest,
+) => Promise<UploadInstructions> | UploadInstructions
+
+export type UploadInstructionsCapability = {
+  /** Generates upload instructions. The generator or supporting endpoint must check access. */
+  generate: GenerateUploadInstructions
+  /**
+   * Require a receipt signed by `resolveSignedURLKey` before invoking upload handlers. Client
+   * uploads keep an `original` and file history only when a receipt is verified.
+   * @see https://payloadcms.com/docs/upload/storage-adapters#custom-upload-receipts
+   */
+  requiresUploadReceipt?: boolean
+  /**
+   * Whether the Admin panel should use these instructions before saving a document.
+   * This can still be useful when upload chunks pass through Payload.
+   */
+  useInAdmin: boolean
+}
+export type checkFileRestrictionsParams = {
+  /** Set to false when the file bytes have not been uploaded yet. */
+  checkFileContents?: boolean
+  collection: CollectionConfig
+  file: File
+  req: PayloadRequest
+}
+
+export type SanitizedUploadConfig = {
+  staticDir: UploadConfig['staticDir']
+  /**
+   * The collection's image sizes, as written at startup by a registered transformer such as
+   * `sharpTransformer({ collections: { <slug>: { variants } } })`. Names and admin options
+   * only — not authored on the collection.
+   */
+  variants?: ImageSize[]
+} & UploadConfig
+
+export type File = {
+  /**
+   * The buffer of the file.
+   */
+  data: Buffer
+  /**
+   * The mimetype of the file.
+   */
+  mimetype: string
+  /**
+   * The name of the file.
+   */
+  name: string
+  /**
+   * The size of the file in bytes.
+   */
+  size: number
+  /**
+   * Path to the temp file on disk when useTempFiles is enabled. In this case file.data will be an empty buffer.
+   */
+  tempFilePath?: string
+}
+
+export type FileToSave = {
+  /**
+   * Which document field describes this file. Storage uses it to find the file's location,
+   * because the main file and the original can share a filename.
+   */
+  role?: StoredFileRole
+} & (
+  | {
+      /**
+       * The buffer of the file.
+       */
+      buffer: Buffer
+      /**
+       * The path to save the file.
+       */
+      path: string
+    }
+  | {
+      /**
+       * The path to save the file.
+       */
+      path: string
+      /**
+       * An existing file on disk to copy to `path`, instead of `buffer` - avoids loading a file
+       * that's already on disk (e.g. a temp file) fully into memory just to write it back out.
+       */
+      sourcePath: string
+    }
+)
+
+type Crop = {
+  height: number
+  unit: '%' | 'px'
+  width: number
+  x: number
+  y: number
+}
+
+export type FocalPoint = {
+  x: number
+  y: number
+}
+
+export type UploadEdits = {
+  crop?: Crop
+  focalPoint?: FocalPoint
+  heightInPixels?: number
+  widthInPixels?: number
+}

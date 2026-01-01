@@ -1,0 +1,385 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../../../__helpers/shared/sdk/index.js'
+import type { GeneratedTypes } from '../../../__helpers/shared/sdk/types.js'
+import type { Config } from '../../payload-types.js'
+
+import {
+  getColumnSelectorItem,
+  openListColumns,
+  toggleColumn,
+} from '../../../__helpers/e2e/columns/index.js'
+import { addListFilter } from '../../../__helpers/e2e/filters/index.js'
+import { exactText, saveDocAndAssert, selectTableRow } from '../../../__helpers/e2e/helpers.js'
+import { upsertPreferences } from '../../../__helpers/e2e/preferences.js'
+import { runAxeScan } from '../../../__helpers/e2e/runAxeScan.js'
+import { AdminUrlUtil } from '../../../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../../../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../../../__helpers/shared/initPayloadE2ENoConfig.js'
+import { RESTClient } from '../../../__helpers/shared/rest.js'
+import { ensureCompilationIsDone } from '../../../__setup/e2e/ensureCompilationIsDone.js'
+import { initPage } from '../../../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../../../playwright.config.js'
+import { textFieldsSlug } from '../../slugs.js'
+import { textDoc } from './shared.js'
+
+const filename = fileURLToPath(import.meta.url)
+const currentFolder = path.dirname(filename)
+const dirname = path.resolve(currentFolder, '../../')
+
+const { beforeAll, beforeEach, describe } = test
+
+let payload: PayloadTestSDK<Config>
+let client: RESTClient
+let page: Page
+let serverURL: string
+// If we want to make this run in parallel: test.describe.configure({ mode: 'parallel' })
+let url: AdminUrlUtil
+
+describe('Text', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({
+      dirname,
+      // prebuild,
+    }))
+    url = new AdminUrlUtil(serverURL, textFieldsSlug)
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+
+    if (client) {
+      await client.logout()
+    }
+    client = new RESTClient({ defaultSlug: 'users', serverURL })
+    await client.login()
+
+    await ensureCompilationIsDone({ page, serverURL })
+  })
+
+  describe('hidden and disabled fields', () => {
+    test('should not render top-level hidden fields in the UI', async () => {
+      await page.goto(url.create)
+      await expect(page.locator('#field-hiddenTextField')).toBeHidden()
+      await page.goto(url.list)
+      await expect(page.locator('.cell-hiddenTextField')).toBeHidden()
+      await expect(page.locator('#heading-hiddenTextField')).toBeHidden()
+
+      const { columnContainer } = await openListColumns(page, {})
+
+      await expect(
+        getColumnSelectorItem({ container: columnContainer, label: 'Hidden Text Field' }),
+      ).toBeHidden()
+
+      await selectTableRow(page, 'Seeded text document')
+      await page.locator('.edit-many__toggle').click()
+      await page.locator('.field-select .rs__control').click()
+
+      const hiddenFieldOption = page.locator('.rs__option', {
+        hasText: exactText('Hidden Text Field'),
+      })
+
+      await expect(hiddenFieldOption).toBeHidden()
+    })
+
+    test('should not show disabled fields in the UI', async () => {
+      await page.goto(url.create)
+      await expect(page.locator('#field-disabledTextField')).toHaveCount(0)
+      await page.goto(url.list)
+      await expect(page.locator('.cell-disabledTextField')).toBeHidden()
+      await expect(page.locator('#heading-disabledTextField')).toBeHidden()
+
+      const { columnContainer } = await openListColumns(page, {})
+
+      await expect(
+        getColumnSelectorItem({ container: columnContainer, label: 'Disabled Text Field' }),
+      ).toBeHidden()
+
+      await selectTableRow(page, 'Seeded text document')
+
+      await page.locator('.edit-many__toggle').click()
+
+      await page.locator('.field-select .rs__control').click()
+
+      const disabledFieldOption = page.locator('.rs__option', {
+        hasText: exactText('Disabled Text Field'),
+      })
+
+      await expect(disabledFieldOption).toBeHidden()
+    })
+
+    test('should render hidden input for admin.hidden fields', async () => {
+      await page.goto(url.create)
+      await expect(page.locator('#field-adminHiddenTextField')).toHaveAttribute('type', 'hidden')
+      await page.goto(url.list)
+      await expect(page.locator('.cell-adminHiddenTextField').first()).toBeVisible()
+      await expect(page.locator('#heading-adminHiddenTextField')).toBeVisible()
+
+      const { columnContainer } = await openListColumns(page, {})
+
+      await expect(
+        getColumnSelectorItem({ container: columnContainer, label: 'Admin Hidden Text Field' }),
+      ).toBeVisible()
+
+      await selectTableRow(page, 'Seeded text document')
+      await page.locator('.edit-many__toggle').click()
+      await page.locator('.field-select .rs__control').click()
+
+      const adminHiddenFieldOption = page.locator('.rs__option', {
+        hasText: exactText('Admin Hidden Text Field'),
+      })
+
+      await expect(adminHiddenFieldOption).toBeVisible()
+    })
+
+    test('hidden and disabled fields should not break subsequent field paths', async () => {
+      await page.goto(url.create)
+      await expect(page.locator('#custom-field-schema-path')).toHaveText('text-fields._index-4')
+    })
+  })
+
+  test('should display field in list view', async () => {
+    await page.goto(url.list)
+    const textCell = page.locator('.row-1 .cell-text')
+    await expect(textCell).toHaveText(textDoc.text)
+  })
+
+  test('should respect admin.disableListColumn despite preferences', async () => {
+    await upsertPreferences<Config, GeneratedTypes<any>>({
+      key: 'text-fields-list',
+      payload,
+      user: client.user,
+      value: {
+        columns: [
+          {
+            accessor: 'disableListColumnText',
+            active: true,
+          },
+        ],
+      },
+    })
+
+    await page.goto(url.list)
+    await openListColumns(page, {})
+    await expect(
+      getColumnSelectorItem({ container: page, label: 'Disable List Column Text' }),
+    ).toBeHidden()
+
+    await expect(page.locator('#heading-disableListColumnText')).toBeHidden()
+    await expect(page.locator('table .row-1 .cell-disableListColumnText')).toBeHidden()
+  })
+
+  test('should display i18n label in cells when missing field data', async () => {
+    await page.goto(url.list)
+    await page.waitForURL(new RegExp(`${url.list}.*\\?.*`))
+
+    await toggleColumn(page, {
+      columnLabel: 'Text en',
+      columnName: 'i18nText',
+      targetState: 'on',
+    })
+
+    const textCell = page.locator('.row-1 .cell-i18nText')
+
+    await expect(textCell).toHaveText('<No Text en>')
+  })
+
+  test('should show i18n label', async () => {
+    await page.goto(url.create)
+
+    await expect(page.locator('label[for="field-i18nText"]')).toHaveText('Text en')
+  })
+
+  test('should show i18n placeholder', async () => {
+    await page.goto(url.create)
+    await expect(page.locator('#field-i18nText')).toHaveAttribute('placeholder', 'en placeholder')
+  })
+
+  test('should show i18n descriptions', async () => {
+    await page.goto(url.create)
+    const description = page.locator('.field-description-i18nText')
+    await expect(description).toHaveText('en description')
+  })
+
+  test('should create hasMany with multiple texts', async () => {
+    const input = 'five'
+    const furtherInput = 'six'
+
+    await page.goto(url.create)
+    const requiredField = page.locator('#field-text')
+    const field = page.locator('.field-hasMany')
+
+    await requiredField.fill(String(input))
+    await field.click()
+    await page.keyboard.type(input)
+    await page.keyboard.press('Enter')
+    await page.keyboard.type(furtherInput)
+    await page.keyboard.press('Enter')
+    await saveDocAndAssert(page)
+    await expect(field.locator('.rs__value-container')).toContainText(input)
+    await expect(field.locator('.rs__value-container')).toContainText(furtherInput)
+  })
+
+  test('should allow editing hasMany text field values by clicking', async () => {
+    const originalText = 'original'
+    const newText = 'new'
+
+    await page.goto(url.create)
+
+    // fill required field
+    const requiredField = page.locator('#field-text')
+    await requiredField.fill(String(originalText))
+
+    const field = page.locator('.field-hasMany')
+
+    // Add initial value
+    await field.click()
+    await page.keyboard.type(originalText)
+    await page.keyboard.press('Enter')
+
+    // Click to edit existing value
+    const value = field.locator('.multi-value-label__text')
+    await value.click()
+    await value.dblclick()
+    await page.keyboard.type(newText)
+    await page.keyboard.press('Enter')
+
+    await saveDocAndAssert(page)
+    await expect(field.locator('.rs__value-container')).toContainText(`${newText}`)
+  })
+
+  test('should not allow editing hasMany text field values when disabled', async () => {
+    await page.goto(url.create)
+    const field = page.locator('.field-readOnlyHasMany')
+
+    // Try to click to edit
+    const value = field.locator('.multi-value-label__text')
+    await value.click({ force: true })
+
+    // Verify it does not become editable
+    await expect(field.locator('.multi-value-label__text')).not.toHaveClass(/.*--editable/)
+  })
+
+  test('should filter Text field hasMany: false in the collection list view - in', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Text',
+      operatorLabel: 'is in',
+      page,
+      value: 'Another text document',
+    })
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(1)
+  })
+
+  test('should filter Text field hasMany: false in the collection list view - is not in', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Text',
+      operatorLabel: 'is not in',
+      page,
+      value: 'Another text document',
+    })
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(1)
+  })
+
+  test('should filter Text field hasMany: true in the collection list view - in', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Has Many',
+      operatorLabel: 'is in',
+      page,
+      value: 'one',
+    })
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(1)
+  })
+
+  test('should filter Text field hasMany: true in the collection list view - is not in', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Has Many',
+      operatorLabel: 'is not in',
+      page,
+      value: 'four',
+    })
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(1)
+  })
+
+  test('should filter Text field hasMany: true in the collection list view - contains single value', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    await addListFilter({
+      fieldLabel: 'Has Many',
+      operatorLabel: 'contains',
+      page,
+      value: 'two',
+    })
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(1)
+  })
+
+  test('should filter Text field hasMany: true in the collection list view - contains multiple values', async () => {
+    await page.goto(url.list)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+
+    // Add filter with first value
+    const { condition } = await addListFilter({
+      fieldLabel: 'Has Many',
+      operatorLabel: 'contains',
+      page,
+      value: 'one',
+    })
+
+    // Add second value to the same filter
+    const valueInput = condition.locator('.condition__value input')
+    await valueInput.click()
+    await page.keyboard.type('three')
+    await page.keyboard.press('Enter')
+
+    await wait(300)
+    await expect(page.locator('table >> tbody >> tr')).toHaveCount(2)
+  })
+
+  describe.skip('A11y', () => {
+    test.fixme('Edit view should have no accessibility violations', async ({}, testInfo) => {
+      await page.goto(url.create)
+      await page.locator('#field-text').waitFor()
+
+      const scanResults = await runAxeScan({
+        exclude: ['[id*="react-select-"]'], // ignore react-select elements here
+        include: ['.document-fields__main'],
+        page,
+        testInfo,
+      })
+
+      expect(scanResults.violations.length).toBe(0)
+    })
+  })
+})

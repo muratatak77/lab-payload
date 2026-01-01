@@ -1,0 +1,319 @@
+import type { CollectionConfig, Field, GroupField, SanitizedUploadConfig, TextField } from 'payload'
+
+import path from 'path'
+
+import type { GeneratedAdapter, GenerateFileURL } from '../types.js'
+
+import { getAfterReadHook } from '../hooks/afterRead.js'
+import { getBeforeChangeHook } from '../hooks/beforeChange.js'
+import { getNormalizeUploadPrefixFieldHook } from '../hooks/normalizeUploadPrefix.js'
+
+interface Args {
+  adapter?: GeneratedAdapter
+  collection: CollectionConfig
+  disablePayloadAccessControl?: true
+  generateFileURL?: GenerateFileURL
+  prefix?: string
+  /**
+   * When true, do not default the `prefix` field to the collection prefix; the
+   * document field holds only the document-level segment.
+   */
+  useCompositePrefixes?: boolean
+}
+
+export const getFields = ({
+  adapter,
+  collection,
+  disablePayloadAccessControl,
+  generateFileURL,
+  prefix,
+  useCompositePrefixes = false,
+}: Args): Field[] => {
+  const baseURLField: TextField = {
+    name: 'url',
+    type: 'text',
+    admin: {
+      hidden: true,
+      readOnly: true,
+    },
+    label: 'URL',
+  }
+
+  const basePrefixField: TextField = {
+    name: 'prefix',
+    type: 'text',
+    admin: {
+      disabled: {
+        bulkEdit: true,
+        column: true,
+        filter: true,
+        groupBy: true,
+      },
+      hidden: true,
+      readOnly: true,
+    },
+  }
+
+  // Server-owned key segment. Field-level `hidden` would remove it before the URL hooks can read it.
+  const baseObjectKeyField: TextField = {
+    name: '_objectKey',
+    type: 'text',
+    admin: {
+      disabled: {
+        bulkEdit: true,
+        column: true,
+        filter: true,
+        groupBy: true,
+      },
+      hidden: true,
+      readOnly: true,
+    },
+  }
+
+  const storedPrefixField: TextField = {
+    ...basePrefixField,
+    admin: {
+      ...basePrefixField.admin,
+      disabled: true,
+    },
+  }
+
+  const fields = [...collection.fields, ...(adapter?.fields || [])]
+
+  // Inject a hook into all URL fields to generate URLs
+
+  let existingURLFieldIndex = -1
+
+  const existingURLField = fields.find((existingField, i) => {
+    if ('name' in existingField && existingField.name === 'url') {
+      existingURLFieldIndex = i
+      return true
+    }
+    return false
+  }) as TextField
+
+  if (existingURLFieldIndex > -1) {
+    fields.splice(existingURLFieldIndex, 1)
+  }
+
+  // Only add afterRead hook if adapter is provided
+  if (adapter) {
+    fields.push({
+      ...baseURLField,
+      ...(existingURLField || {}),
+      hooks: {
+        afterRead: [
+          getAfterReadHook({ adapter, collection, disablePayloadAccessControl, generateFileURL }),
+          ...(existingURLField?.hooks?.afterRead || []),
+        ],
+        beforeChange: [
+          getBeforeChangeHook({
+            adapter,
+            collection,
+            disablePayloadAccessControl,
+            generateFileURL,
+          }),
+          ...(existingURLField?.hooks?.beforeChange || []),
+        ],
+      },
+    } as TextField)
+  } else {
+    fields.push({
+      ...baseURLField,
+      ...(existingURLField || {}),
+    } as TextField)
+  }
+
+  let originalField = fields.find(
+    (field): field is GroupField =>
+      field.type === 'group' && 'name' in field && field.name === 'original',
+  )
+
+  if (adapter && !originalField) {
+    originalField = {
+      name: 'original',
+      type: 'group',
+      fields: [baseURLField],
+    }
+    fields.push(originalField)
+  }
+
+  const originalURLFieldIndex = originalField?.fields.findIndex(
+    (field) => 'name' in field && field.name === 'url',
+  )
+
+  if (
+    adapter &&
+    originalField &&
+    originalURLFieldIndex !== undefined &&
+    originalURLFieldIndex >= 0
+  ) {
+    const originalURLField = originalField.fields[originalURLFieldIndex] as TextField
+
+    originalField.fields[originalURLFieldIndex] = {
+      ...baseURLField,
+      ...originalURLField,
+      hooks: {
+        afterRead: [
+          getAfterReadHook({
+            adapter,
+            collection,
+            disablePayloadAccessControl,
+            generateFileURL,
+            isOriginal: true,
+          }),
+          ...(originalURLField.hooks?.afterRead || []),
+        ],
+        beforeChange: [
+          getBeforeChangeHook({
+            adapter,
+            collection,
+            disablePayloadAccessControl,
+            generateFileURL,
+            isOriginal: true,
+          }),
+          ...(originalURLField.hooks?.beforeChange || []),
+        ],
+      },
+    } as TextField
+  }
+
+  // Storage adapters add these fields during their `init`, after transformers (e.g. Sharp) have
+  // written each collection's image sizes onto its upload config.
+  const variants =
+    typeof collection.upload === 'object'
+      ? (collection.upload as SanitizedUploadConfig).variants
+      : undefined
+
+  if (variants) {
+    let existingSizesFieldIndex = -1
+
+    const existingSizesField = fields.find((existingField, i) => {
+      if ('name' in existingField && existingField.name === 'variants') {
+        existingSizesFieldIndex = i
+        return true
+      }
+
+      return false
+    }) as GroupField
+
+    if (existingSizesFieldIndex > -1) {
+      fields.splice(existingSizesFieldIndex, 1)
+    }
+
+    const sizesField: Field = {
+      ...(existingSizesField || {}),
+      name: 'variants',
+      type: 'group',
+      admin: {
+        hidden: true,
+      },
+      fields: variants.map((size) => {
+        const existingSizeField = existingSizesField?.fields.find(
+          (existingField) => 'name' in existingField && existingField.name === size.name,
+        ) as GroupField
+
+        const existingSizeURLField = existingSizeField?.fields.find(
+          (existingField) => 'name' in existingField && existingField.name === 'url',
+        ) as TextField
+
+        // Only add afterRead hook if adapter is provided
+        const sizeURLField: TextField = adapter
+          ? ({
+              ...(existingSizeURLField || {}),
+              ...baseURLField,
+              hooks: {
+                afterRead: [
+                  getAfterReadHook({
+                    adapter,
+                    collection,
+                    disablePayloadAccessControl,
+                    generateFileURL,
+                    size,
+                  }),
+                  ...((typeof existingSizeURLField === 'object' &&
+                    'hooks' in existingSizeURLField &&
+                    existingSizeURLField?.hooks?.afterRead) ||
+                    []),
+                ],
+                beforeChange: [
+                  getBeforeChangeHook({
+                    adapter,
+                    collection,
+                    disablePayloadAccessControl,
+                    generateFileURL,
+                    size,
+                  }),
+                  ...((typeof existingSizeURLField === 'object' &&
+                    'hooks' in existingSizeURLField &&
+                    existingSizeURLField?.hooks?.beforeChange) ||
+                    []),
+                ],
+              },
+            } as TextField)
+          : ({
+              ...(existingSizeURLField || {}),
+              ...baseURLField,
+            } as TextField)
+
+        return {
+          ...existingSizeField,
+          name: size.name,
+          type: 'group',
+          fields: [
+            ...(adapter?.fields || []).filter(
+              (field) => !('name' in field && ['_objectKey', 'prefix'].includes(field.name)),
+            ),
+            sizeURLField,
+            storedPrefixField,
+            baseObjectKeyField,
+          ],
+        }
+      }),
+    }
+
+    fields.push(sizesField)
+  }
+
+  // Always insert the prefix field so the schema stays consistent regardless of
+  // whether the plugin is enabled or a prefix is configured.
+  let existingPrefixFieldIndex = -1
+
+  const existingPrefixField = fields.find((existingField, i) => {
+    if ('name' in existingField && existingField.name === 'prefix') {
+      existingPrefixFieldIndex = i
+      return true
+    }
+    return false
+  }) as TextField
+
+  if (existingPrefixFieldIndex > -1) {
+    fields.splice(existingPrefixFieldIndex, 1)
+  }
+
+  fields.push({
+    ...basePrefixField,
+    ...(existingPrefixField || {}),
+    defaultValue:
+      existingPrefixField?.defaultValue ??
+      (useCompositePrefixes ? '' : prefix ? path.posix.join(prefix) : ''),
+    hooks: {
+      ...existingPrefixField?.hooks,
+      beforeChange: [
+        ...(existingPrefixField?.hooks?.beforeChange || []),
+        getNormalizeUploadPrefixFieldHook({ collectionPrefix: prefix, useCompositePrefixes }),
+      ],
+    },
+  } as TextField)
+
+  const existingObjectKeyFieldIndex = fields.findIndex(
+    (existingField) => 'name' in existingField && existingField.name === '_objectKey',
+  )
+  if (existingObjectKeyFieldIndex > -1) {
+    fields.splice(existingObjectKeyFieldIndex, 1)
+  }
+
+  fields.push({ ...baseObjectKeyField })
+
+  return fields
+}

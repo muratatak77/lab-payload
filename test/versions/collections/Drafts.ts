@@ -1,0 +1,167 @@
+import type { CollectionConfig, Where } from 'payload'
+
+import { draftCollectionSlug, secondaryAdminUserCollectionSlug } from '../slugs.js'
+
+const DraftPosts: CollectionConfig = {
+  slug: draftCollectionSlug,
+  access: {
+    read: ({ req }) => {
+      if (typeof req.context.draftAccessDescription === 'string') {
+        return {
+          description: {
+            equals: req.context.draftAccessDescription,
+          },
+        }
+      }
+
+      const { user } = req
+
+      if (user) {
+        return true
+      }
+
+      return {
+        or: [
+          {
+            _status: {
+              equals: 'published',
+            },
+          },
+          {
+            _status: {
+              exists: false,
+            },
+          },
+        ],
+      }
+    },
+    readVersions: ({ req: { user } }) => Boolean(user),
+    update: ({ req: { user } }) => {
+      const constraints: Where[] = [{ restrictedToUpdate: { not_equals: true } }]
+
+      if (user && user.collection === secondaryAdminUserCollectionSlug) {
+        constraints.push({ restrictedToSecondaryCollection: { not_equals: true } })
+      }
+
+      return { and: constraints }
+    },
+  },
+  admin: {
+    components: {
+      edit: {
+        PublishButton: '/elements/CustomSaveButton/index.js#CustomPublishButton',
+      },
+      views: {
+        edit: {
+          version: {
+            actions: ['/elements/CollectionVersionButton/index.js'],
+          },
+          versions: {
+            actions: ['/elements/CollectionVersionsButton/index.js'],
+          },
+        },
+      },
+    },
+    defaultColumns: ['title', 'description', 'createdAt', '_status'],
+    useAsTitle: 'title',
+  },
+  fields: [
+    {
+      type: 'group',
+      fields: [
+        {
+          name: 'title',
+          type: 'text',
+          label: 'Title',
+          localized: true,
+          required: true,
+          unique: true,
+        },
+      ],
+    },
+    {
+      name: 'description',
+      type: 'textarea',
+      label: 'Description',
+      required: true,
+    },
+    {
+      name: 'radio',
+      type: 'radio',
+      options: [
+        {
+          label: { en: 'Test en', es: 'Test es' },
+          value: 'test',
+        },
+      ],
+    },
+    {
+      name: 'select',
+      type: 'select',
+      hasMany: true,
+      options: [
+        {
+          label: { en: 'Test1 en', es: 'Test1 es' },
+          value: 'test1',
+        },
+        {
+          label: { en: 'Test2 en', es: 'Test2 es' },
+          value: 'test2',
+        },
+      ],
+    },
+    {
+      name: 'blocksField',
+      type: 'blocks',
+      blocks: [
+        {
+          slug: 'block',
+          fields: [
+            {
+              name: 'text',
+              type: 'text',
+            },
+            {
+              name: 'localized',
+              type: 'text',
+              localized: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'relation',
+      type: 'relationship',
+      relationTo: draftCollectionSlug,
+    },
+    {
+      name: 'relationWithFilterOptions',
+      type: 'relationship',
+      filterOptions: ({ req }) => {
+        // Verify validation preserves access to native Request properties.
+        return req.payloadAPI === 'REST' ? req.method === 'POST' : true
+      },
+      hasMany: true,
+      relationTo: draftCollectionSlug,
+    },
+    {
+      name: 'restrictedToUpdate',
+      type: 'checkbox',
+    },
+    {
+      name: 'restrictedToSecondaryCollection',
+      type: 'checkbox',
+    },
+  ],
+  versions: {
+    drafts: {
+      schedulePublish: {
+        timeFormat: 'HH:mm',
+      },
+    },
+    maxPerDoc: 0,
+  },
+}
+
+export default DraftPosts

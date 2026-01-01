@@ -1,0 +1,2230 @@
+import type { BrowserContext, Locator, Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import * as path from 'path'
+import { mapAsync } from 'payload'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import type { PayloadTestSDK } from '../__helpers/shared/sdk/index.js'
+import type {
+  Autosave,
+  Config,
+  Page as PageType,
+  PayloadLockedDocument,
+  Post,
+  ServerComponent,
+  Simple,
+  SimpleWithVersion,
+  Test,
+  User,
+} from './payload-types.js'
+
+import { goToNextPage } from '../__helpers/e2e/goToNextPage.js'
+import { exactText, saveDocAndAssert } from '../__helpers/e2e/helpers.js'
+import { getSelectMenu } from '../__helpers/e2e/selectInput.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { reInitializeDB } from '../__helpers/shared/clearAndSeed/reInitializeDB.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+const { beforeAll, beforeEach, describe } = test
+
+const lockedDocumentCollection = 'payload-locked-documents'
+
+let page: Page
+let globalUrl: AdminUrlUtil
+let postsUrl: AdminUrlUtil
+let pagesUrl: AdminUrlUtil
+let serverComponentsUrl: AdminUrlUtil
+let testsUrl: AdminUrlUtil
+let simpleUrl: AdminUrlUtil
+let simpleWithVersionsUrl: AdminUrlUtil
+let autosaveUrl: AdminUrlUtil
+let payload: PayloadTestSDK<Config>
+let serverURL: string
+
+describe('Locked Documents', () => {
+  beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+    ;({ payload, serverURL } = await initPayloadE2ENoConfig<Config>({ dirname }))
+
+    globalUrl = new AdminUrlUtil(serverURL, 'menu')
+    postsUrl = new AdminUrlUtil(serverURL, 'posts')
+    pagesUrl = new AdminUrlUtil(serverURL, 'pages')
+    serverComponentsUrl = new AdminUrlUtil(serverURL, 'server-components')
+    testsUrl = new AdminUrlUtil(serverURL, 'tests')
+    simpleUrl = new AdminUrlUtil(serverURL, 'simple')
+    simpleWithVersionsUrl = new AdminUrlUtil(serverURL, 'simple-with-versions')
+    autosaveUrl = new AdminUrlUtil(serverURL, 'autosave')
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  beforeEach(async () => {
+    await reInitializeDB({
+      serverURL,
+    })
+  })
+
+  describe('disabled locking', () => {
+    test('should prevent locking of documents if lockDocuments is false', async () => {
+      const { id } = await createPageDoc({})
+
+      await page.goto(pagesUrl.edit(id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(0)
+    })
+  })
+
+  describe('list view - collections', () => {
+    let postDoc: Post
+    let anotherPostDoc: Post
+    let user2: User
+    let lockedDoc: PayloadLockedDocument
+    let testDoc: Test
+    let testLockedDoc: PayloadLockedDocument
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'hello locked',
+      })
+
+      anotherPostDoc = await createPostDoc({
+        text: 'another post',
+      })
+
+      testDoc = await createTestDoc({
+        text: 'test doc',
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      lockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'posts',
+            value: postDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      testLockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'tests',
+            value: testDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should show lock icon on document row if locked', async () => {
+      await page.goto(postsUrl.list)
+
+      await expect(page.locator('.table .row-2 .locked svg.icon--lock')).toBeVisible()
+    })
+
+    test('should show tooltip with editing user when hovering the lock icon on a document row', async () => {
+      await page.goto(postsUrl.list)
+
+      const lockIcon = page.locator('.table .row-2 .locked')
+      await lockIcon.hover()
+
+      await expect(
+        page.locator('.tooltip--show', { hasText: exactText(`${user2.email} is editing`) }),
+      ).toBeVisible()
+    })
+
+    test('should not show lock icon on document row if unlocked', async () => {
+      await page.goto(postsUrl.list)
+
+      await expect(page.locator('.table .row-3 .checkbox-input__input')).toBeVisible()
+    })
+
+    test('should not show lock icon on document if expired', async () => {
+      await page.goto(testsUrl.list)
+
+      // Need to wait for lock duration to expire (lockDuration: 5 seconds)
+
+      await wait(5000)
+
+      await page.reload()
+
+      await expect(page.locator('.table .row-1 .checkbox-input__input')).toBeVisible()
+    })
+
+    test('should not show lock icon on document row if locked by current user', async () => {
+      await page.goto(postsUrl.edit(anotherPostDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('testing')
+
+      await page.reload()
+
+      await page.goto(postsUrl.list)
+
+      await expect(page.locator('.table .row-1 .checkbox-input__input')).toBeVisible()
+    })
+
+    test('should only allow bulk delete on unlocked documents on current page', async () => {
+      await page.goto(postsUrl.list)
+      const grid = page.getByRole('grid')
+      const lockedRow = grid.getByRole('row').filter({ has: page.locator('.locked') })
+      const selectableRows = grid.getByRole('row').filter({
+        has: page.locator('.select-row__checkbox'),
+      })
+
+      await expect(lockedRow).toHaveCount(1)
+      await expect(lockedRow).not.toHaveAttribute('aria-selected')
+      await expect(selectableRows).toHaveCount(2)
+      await expect(selectableRows.nth(0)).toHaveAttribute('aria-selected', 'false')
+      await page.locator('input#select-all').click()
+      await expect(lockedRow).not.toHaveAttribute('aria-selected')
+      await expect(selectableRows.nth(0)).toHaveAttribute('aria-selected', 'true')
+      // Should be partial since one doc is locked and cannot be selected
+      await expect(page.locator('input#select-all')).toHaveJSProperty('indeterminate', true)
+      await page.locator('.delete-documents__toggle').click()
+      await expect(page.locator('#confirm-delete-many-docs .dialog__body p')).toHaveText(
+        'You are about to delete 2 Posts',
+      )
+    })
+
+    test('should only allow bulk delete on unlocked documents on all pages', async () => {
+      await mapAsync([...Array(9)], async () => {
+        await createPostDoc({
+          text: 'Ready for delete',
+        })
+      })
+
+      await page.reload()
+
+      await page.goto(postsUrl.list)
+
+      await page.locator('input#select-all').check()
+      await page.locator('.list-selection .list-selection__button#select-all-across-pages').click()
+      await page.locator('.delete-documents__toggle').click()
+      await page.locator('#confirm-delete-many-docs [data-dialog-action="confirm"]').click()
+      await expect(page.locator('.cell-_select')).toHaveCount(1)
+    })
+
+    test('should only allow bulk publish on unlocked documents on all pages', async () => {
+      await mapAsync([...Array(9)], async () => {
+        await createPostDoc({
+          text: 'Ready for unpublish',
+        })
+      })
+
+      await page.reload()
+
+      await page.goto(postsUrl.list)
+
+      await page.locator('input#select-all').check()
+      await page.locator('.list-selection .list-selection__button#select-all-across-pages').click()
+      await page.locator('.list-selection__button[aria-label="Publish"]').click()
+      await page.locator('#publish-posts [data-dialog-action="confirm"]').click()
+      await expect(page.locator('#publish-posts')).toBeHidden()
+
+      await goToNextPage(page)
+      await expect(page.locator('.row-1 .cell-_status')).toContainText('Draft')
+    })
+
+    test('should only allow bulk unpublish on unlocked documents on all pages', async () => {
+      await mapAsync([...Array(10)], async () => {
+        await createPostDoc({
+          _status: 'published',
+          text: 'Ready for publish',
+        })
+      })
+
+      await page.goto(postsUrl.list)
+
+      await page.locator('input#select-all').check()
+      await page.locator('.list-selection .list-selection__button#select-all-across-pages').click()
+      await page.locator('.list-selection__button[aria-label="Unpublish"]').click()
+      await page.locator('#unpublish-posts [data-dialog-action="confirm"]').click()
+      await expect(page.locator('.payload-toast-container .toast-success')).toHaveText(
+        'Updated 10 Posts successfully.',
+      )
+    })
+
+    test('should only allow bulk edit on unlocked documents on all pages', async () => {
+      await mapAsync([...Array(8)], async () => {
+        await createPostDoc({
+          _status: 'draft',
+          text: 'doc',
+        })
+      })
+      await page.goto(postsUrl.list)
+
+      const bulkText = 'Bulk update title'
+      await page.locator('input#select-all').click()
+      // Should be partial since one doc is locked and cannot be selected
+      await expect(page.locator('input#select-all')).toHaveJSProperty('indeterminate', true)
+      await page.locator('.list-selection .list-selection__button#select-all-across-pages').click()
+      await page.locator('.edit-many__toggle').click()
+
+      await page.locator('.field-select .rs__control').click()
+
+      const textOption = getSelectMenu({ page }).locator('.rs__option', {
+        hasText: exactText('Text'),
+      })
+
+      await expect(textOption).toBeVisible()
+
+      await textOption.click()
+
+      const textInput = page.locator('#field-text')
+
+      await expect(textInput).toBeVisible()
+
+      await textInput.fill(bulkText)
+
+      await page.locator('.form-submit button[type="submit"].edit-many__publish').click()
+      await expect(page.locator('.payload-toast-container .toast-error')).toContainText(
+        'Unable to update 1 out of 11 Posts.',
+      )
+
+      await page.locator('.edit-many__header__close').click()
+
+      await page.reload()
+
+      await expect(page.locator('.row-1 .cell-text')).toContainText(bulkText)
+      await expect(page.locator('.row-2 .cell-text')).toContainText(bulkText)
+      await expect(page.locator('.row-10 .cell-text')).toContainText('hello locked')
+    })
+  })
+
+  describe('document locking / unlocking - one user', () => {
+    let postDoc: Post
+    let postDocTwo: Post
+    let expiredDocOne: Test
+    let expiredLockedDocOne: PayloadLockedDocument
+    let expiredDocTwo: Test
+    let expiredLockedDocTwo: PayloadLockedDocument
+    let testDoc: Test
+    let user2: User
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'hello',
+      })
+
+      postDocTwo = await createPostDoc({
+        text: 'post doc two',
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      expiredDocOne = await createTestDoc({
+        text: 'expired doc one',
+      })
+
+      expiredLockedDocOne = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'tests',
+            value: expiredDocOne.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expiredDocTwo = await createTestDoc({
+        text: 'expired doc two',
+      })
+
+      expiredLockedDocTwo = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'tests',
+            value: expiredDocTwo.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      testDoc = await createTestDoc({ text: 'hello' })
+    })
+
+    test('should delete all expired locked documents upon initial editing of unlocked document', async () => {
+      await page.goto(testsUrl.list)
+
+      await expect(page.locator('.table .row-2 .locked svg.icon--lock')).toBeVisible()
+      await expect(page.locator('.table .row-3 .locked svg.icon--lock')).toBeVisible()
+
+      await wait(5000)
+
+      await page.reload()
+
+      await expect(page.locator('.table .row-2 .checkbox-input__input')).toBeVisible()
+      await expect(page.locator('.table .row-3 .checkbox-input__input')).toBeVisible()
+
+      const lockedTestDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        pagination: false,
+        overrideAccess: true,
+      })
+
+      expect(lockedTestDocs.docs.length).toBe(2)
+
+      await page.goto(testsUrl.edit(testDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('some test doc')
+
+      await wait(500)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        pagination: false,
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(1)
+    })
+
+    test('should lock document upon initial editing of unlocked document', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(1)
+    })
+
+    test('should unlock document on save / publish', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(1)
+
+      await saveDocAndAssert(page)
+
+      await wait(500)
+
+      const unlockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(unlockedDocs.docs.length).toBe(0)
+    })
+
+    test('should keep document locked when navigating to other tabs i.e. api', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('testing tab navigation...')
+
+      await wait(500)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(1)
+
+      await page.getByRole('link', { name: 'API', exact: true }).click()
+
+      // Locate the modal container
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click the "Leave anyway" button
+      await page.locator('#leave-without-saving .dialog__footer .btn--style-primary').click()
+
+      await wait(500)
+
+      const unlockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(unlockedDocs.docs.length).toBe(1)
+
+      await payload.delete({
+        collection: lockedDocumentCollection,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should unlock document on navigate away', async () => {
+      await page.goto(postsUrl.edit(postDocTwo.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(1000)
+
+      const lockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDocTwo.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(lockedDocs.docs.length).toBe(1)
+
+      await page.locator('header.app-header a[href="/admin/collections/posts"]').click()
+
+      // Locate the modal container
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click the "Leave anyway" button
+      await page.locator('#leave-without-saving .dialog__footer .btn--style-primary').click()
+
+      await wait(500)
+
+      expect(page.url()).toContain(postsUrl.list)
+
+      const unlockedDocs = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      expect(unlockedDocs.docs.length).toBe(0)
+    })
+  })
+
+  describe('document locking - incoming user', () => {
+    let postDoc: Post
+    let user2: User
+    let lockedDoc: PayloadLockedDocument
+    let expiredTestDoc: Test
+    let expiredTestLockedDoc: PayloadLockedDocument
+    let expiredPostDoc: Post
+    let expiredPostLockedDoc: PayloadLockedDocument
+
+    let serverComponentDoc: ServerComponent
+    let lockedServerComponentDoc: PayloadLockedDocument
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'new post doc',
+      })
+
+      serverComponentDoc = await payload.create({
+        collection: 'server-components',
+        data: {},
+        overrideAccess: true,
+      })
+
+      expiredTestDoc = await createTestDoc({
+        text: 'expired doc',
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      lockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'posts',
+            value: postDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expiredTestLockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'tests',
+            value: expiredTestDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      expiredPostDoc = await createPostDoc({
+        text: 'expired post doc',
+      })
+
+      expiredPostLockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          createdAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+          document: {
+            relationTo: 'posts',
+            value: expiredPostDoc.id,
+          },
+          globalSlug: undefined,
+          updatedAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      lockedServerComponentDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'server-components',
+            value: serverComponentDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should show Document Locked modal for incoming user when entering locked document', async () => {
+      await page.goto(postsUrl.list)
+
+      await wait(500)
+
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      await page.locator('#document-locked-cancel').click()
+
+      // should go back to collection list view
+      expect(page.url()).toContain(postsUrl.list)
+    })
+
+    test('should properly close modal and allow re-opening after clicking Go Back', async () => {
+      await page.goto(postsUrl.list)
+
+      await wait(500)
+
+      // First time: navigate to locked document
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click Go Back
+      await page.locator('#document-locked-cancel').click()
+
+      // Wait for navigation to complete
+      await page.waitForURL(`**${postsUrl.list}`)
+
+      // Modal should be completely closed
+      await expect(modalContainer).toBeHidden()
+
+      // Second time: navigate to the same locked document again
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      // Modal should appear again (verifies no stuck modal state)
+      await expect(modalContainer).toBeVisible()
+      await expect(page.locator('#document-locked-cancel')).toBeVisible()
+    })
+
+    test('should not show Document Locked modal for incoming user when entering expired locked document', async () => {
+      await page.goto(testsUrl.list)
+
+      // Need to wait for lock duration to expire (lockDuration: 5 seconds)
+
+      await wait(5000)
+
+      await page.reload()
+
+      await page.goto(testsUrl.edit(expiredTestDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeHidden()
+    })
+
+    test('expired lock should render editable fields (no read-only)', async () => {
+      await page.goto(postsUrl.edit(expiredPostDoc.id))
+
+      await expect(page.locator('#field-text')).toBeEnabled()
+
+      const richTextRoot = page
+        .locator('.rich-text-lexical .ContentEditable__root[data-lexical-editor="true"]')
+        .first()
+      await expect(richTextRoot).toBeVisible()
+
+      // ensure richtext is editable
+      await expect(richTextRoot).toHaveAttribute('contenteditable', 'true')
+    })
+
+    test('should show fields in read-only if incoming user views locked doc in read-only mode', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-locked-view-read-only').click()
+
+      // save buttons should be hidden in read-only mode
+      await expect(page.locator('#action-save-draft')).toBeHidden()
+      await expect(page.locator('#action-save')).toBeHidden()
+      await expect(page.locator('.doc-controls__popup')).toBeHidden()
+
+      // fields should be readOnly / disabled
+      await expect(page.locator('#field-text')).toBeDisabled()
+
+      const richTextRoot = page
+        .locator('.rich-text-lexical .ContentEditable__root[data-lexical-editor="true"]')
+        .first()
+
+      // ensure editor is present
+      await expect(richTextRoot).toBeVisible()
+
+      // core read-only checks
+      await expect(richTextRoot).toHaveAttribute('contenteditable', 'false')
+      await expect(richTextRoot).toHaveAttribute('aria-readonly', 'true')
+
+      // wrapper has read-only class
+      await expect(page.locator('.rich-text-lexical').first()).toHaveClass(
+        /rich-text-lexical--read-only/,
+      )
+    })
+
+    test('should show server rendered fields in read-only if incoming user views locked doc in read-only mode', async () => {
+      await page.goto(serverComponentsUrl.edit(serverComponentDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-locked-view-read-only').click()
+
+      // Wait for the modal to disappear
+      await expect(modalContainer).toBeHidden()
+
+      // fields should be readOnly / disabled
+      await expect(page.locator('#field-customTextServer')).toBeDisabled()
+    })
+  })
+
+  describe('document take over - modal - incoming user', () => {
+    let postDoc: Post
+    let user2: User
+    let lockedDoc: PayloadLockedDocument
+    let serverComponentDoc: ServerComponent
+    let lockedServerComponentsDoc: PayloadLockedDocument
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'hello',
+      })
+
+      serverComponentDoc = await payload.create({
+        collection: 'server-components',
+        data: {},
+        overrideAccess: true,
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      lockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'posts',
+            value: postDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      lockedServerComponentsDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'server-components',
+            value: serverComponentDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should update user data if incoming user takes over from document modal', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click take-over button to take over editing rights of locked doc
+      await page.locator('#document-locked-confirm').click()
+
+      await wait(1000)
+
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      expect(lockedDoc.docs.length).toBe(1)
+
+      const userEmail =
+        // eslint-disable-next-line playwright/no-conditional-in-test
+        lockedDoc.docs[0]?.user.value &&
+        typeof lockedDoc.docs[0].user.value === 'object' &&
+        'email' in lockedDoc.docs[0].user.value &&
+        lockedDoc.docs[0].user.value.email
+
+      expect(userEmail).toEqual('dev@payloadcms.com')
+    })
+
+    test('should render server rendered fields as editable on take over from document modal', async () => {
+      await page.goto(serverComponentsUrl.edit(serverComponentDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click take-over button to take over editing rights of locked doc
+      await page.locator('#document-locked-confirm').click()
+
+      // Wait for the modal to disappear
+      await expect(modalContainer).toBeHidden()
+
+      // server fields should be enabled
+      await expect(page.locator('#field-customTextServer')).toBeEnabled()
+    })
+  })
+
+  describe('document take over - doc - incoming user', () => {
+    let postDoc: Post
+    let user2: User
+    let lockedDoc: PayloadLockedDocument
+    let serverComponentsDoc: ServerComponent
+    let lockedServerComponentsDoc: PayloadLockedDocument
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'hello',
+      })
+
+      serverComponentsDoc = await payload.create({
+        collection: 'server-components',
+        data: {},
+        overrideAccess: true,
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      lockedDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'posts',
+            value: postDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      lockedServerComponentsDoc = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: {
+            relationTo: 'server-components',
+            value: serverComponentsDoc.id,
+          },
+          globalSlug: undefined,
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should update user data if incoming user takes over from within document', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-locked-view-read-only').click()
+
+      await page.locator('#take-over').click()
+
+      await wait(500)
+
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      expect(lockedDoc.docs.length).toBe(1)
+
+      const userEmail =
+        // eslint-disable-next-line playwright/no-conditional-in-test
+        lockedDoc.docs[0]?.user.value &&
+        typeof lockedDoc.docs[0].user.value === 'object' &&
+        'email' in lockedDoc.docs[0].user.value &&
+        lockedDoc.docs[0].user.value.email
+
+      expect(userEmail).toEqual('dev@payloadcms.com')
+    })
+
+    test('should render server rendered fields as editable after incoming user takes over from within document', async () => {
+      await page.goto(serverComponentsUrl.edit(serverComponentsDoc.id))
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-locked-view-read-only').click()
+
+      // Wait for the modal to disappear
+      await expect(modalContainer).toBeHidden()
+
+      await expect(page.locator('#field-customTextServer')).toBeDisabled()
+
+      await page.locator('#take-over').click()
+
+      await wait(500)
+
+      await expect(page.locator('#field-customTextServer')).toBeEnabled()
+    })
+  })
+
+  describe('document locking - previous user', () => {
+    let postDoc: Post
+    let serverComponentsDoc: ServerComponent
+    let user2: User
+
+    beforeEach(async () => {
+      postDoc = await createPostDoc({
+        text: 'hello',
+      })
+
+      serverComponentsDoc = await payload.create({
+        collection: 'server-components',
+        data: {},
+        overrideAccess: true,
+      })
+
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should show Document Take Over modal for previous user if taken over', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      // Retrieve document id from payload locks collection
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Update payload-locks collection document with different user
+      await payload.update({
+        id: lockedDoc.docs[0]?.id as number | string,
+        collection: lockedDocumentCollection,
+        data: {
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(1000)
+
+      // Try to edit the document again as the "old" user
+      await textInput.fill('goodbye')
+
+      // Wait for Take Over modal to appear
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      await payload.delete({
+        id: lockedDoc.docs[0]?.id,
+        collection: lockedDocumentCollection,
+        overrideAccess: true,
+      })
+    })
+
+    test('should take previous user back to dashboard on dashboard button click', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      // Retrieve document id from payload locks collection
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Update payload-locks collection document with different user
+      await payload.update({
+        id: lockedDoc.docs[0]?.id as number | string,
+        collection: lockedDocumentCollection,
+        data: {
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(1000)
+
+      // Try to edit the document again as the "old" user
+      await textInput.fill('goodbye')
+
+      // Wait for Take Over modal to appear
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-take-over-confirm').click()
+
+      expect(page.url()).toContain(postsUrl.admin)
+
+      await payload.delete({
+        id: lockedDoc.docs[0]?.id,
+        collection: lockedDocumentCollection,
+        overrideAccess: true,
+      })
+    })
+
+    test('should show fields in read-only if previous user views doc in read-only mode', async () => {
+      await page.goto(postsUrl.edit(postDoc.id))
+
+      const textInput = page.locator('#field-text')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      // Retrieve document id from payload locks collection
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: postDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Update payload-locks collection document with different user
+      await payload.update({
+        id: lockedDoc.docs[0]?.id as number | string,
+        collection: lockedDocumentCollection,
+        data: {
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Try to edit the document again as the "old" user
+      await textInput.fill('goodbye')
+
+      // Wait for Take Over modal to appear
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-take-over-cancel').click()
+
+      // save buttons should be hidden in read-only mode
+      await expect(page.locator('#action-save-draft')).toBeHidden()
+      await expect(page.locator('#action-save')).toBeHidden()
+
+      // fields should be readOnly / disabled
+      await expect(page.locator('#field-text')).toBeDisabled()
+    })
+
+    test('should show server rendered fields in read-only mode if previous user views doc in read-only mode', async () => {
+      await page.goto(serverComponentsUrl.edit(serverComponentsDoc.id))
+
+      const textInput = page.locator('#field-customTextServer')
+      await textInput.fill('hello world')
+
+      await wait(500)
+
+      // Retrieve document id from payload locks collection
+      const lockedDoc = await payload.find({
+        collection: lockedDocumentCollection,
+        limit: 1,
+        pagination: false,
+        where: {
+          'document.value': { equals: serverComponentsDoc.id },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Update payload-locks collection document with different user
+      await payload.update({
+        id: lockedDoc.docs[0]?.id as number | string,
+        collection: lockedDocumentCollection,
+        data: {
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      // Try to edit the document again as the "old" user
+      await textInput.fill('goodbye')
+
+      // Wait for Take Over modal to appear
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeVisible()
+
+      // Click read-only button to view doc in read-only mode
+      await page.locator('#document-take-over-cancel').click()
+
+      // fields should be readOnly / disabled
+      await expect(page.locator('#field-customTextServer')).toBeDisabled()
+    })
+  })
+
+  describe('dashboard - globals', () => {
+    let user2: User
+    let lockedMenuGlobal: PayloadLockedDocument
+    let lockedAdminGlobal: PayloadLockedDocument
+
+    beforeEach(async () => {
+      user2 = await payload.create({
+        collection: 'users',
+        data: {
+          email: 'user2@payloadcms.com',
+          password: '1234',
+          roles: ['is_user'],
+        },
+        overrideAccess: true,
+      })
+
+      lockedAdminGlobal = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: undefined,
+          globalSlug: 'admin',
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      lockedMenuGlobal = await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: undefined,
+          globalSlug: 'menu',
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+    })
+
+    test('should show lock on document card in dashboard view if locked', async () => {
+      await page.goto(postsUrl.admin)
+
+      await expect(
+        page.locator('.collections__card-list #card-menu .locked svg.icon--lock'),
+      ).toBeVisible()
+    })
+
+    test('should not show lock on document card in dashboard view if unlocked', async () => {
+      await payload.delete({
+        id: lockedMenuGlobal.id,
+        collection: lockedDocumentCollection,
+        overrideAccess: true,
+      })
+
+      await wait(500)
+
+      await page.goto(postsUrl.admin)
+
+      await expect(page.locator('.collections__card-list #card-menu .locked')).toBeHidden()
+    })
+
+    test('should not show lock on document card in dashboard view if locked by current user', async () => {
+      await payload.delete({
+        id: lockedMenuGlobal.id,
+        collection: lockedDocumentCollection,
+        overrideAccess: true,
+      })
+
+      await page.goto(globalUrl.global('menu'))
+
+      const textInput = page.locator('#field-globalText')
+      await textInput.fill('this is a global menu text field')
+
+      await page.reload()
+
+      await page.goto(postsUrl.admin)
+
+      await expect(page.locator('.collections__card-list #card-menu .locked')).toBeHidden()
+    })
+
+    test('should not show lock on document card in dashboard view if lock expired', async () => {
+      await page.goto(postsUrl.admin)
+
+      await expect(
+        page.locator('.collections__card-list #card-admin .locked svg.icon--lock'),
+      ).toBeVisible()
+
+      // Need to wait for lock duration to expire (lockDuration: 10 seconds)
+
+      await wait(10000)
+
+      await page.reload()
+
+      await expect(page.locator('.collections__card-list #card-admin .locked')).toBeHidden()
+
+      await payload.delete({
+        id: lockedAdminGlobal.id,
+        collection: lockedDocumentCollection,
+        overrideAccess: true,
+      })
+    })
+
+    test('should not show Document Locked modal when entering global with an expired lock', async () => {
+      await payload.create({
+        collection: lockedDocumentCollection,
+        data: {
+          document: undefined,
+          globalSlug: 'admin',
+          user: {
+            relationTo: 'users',
+            value: user2.id,
+          },
+        },
+        overrideAccess: true,
+      })
+
+      await page.goto(postsUrl.admin)
+
+      await expect(
+        page.locator('.collections__card-list #card-admin .locked svg.icon--lock'),
+      ).toBeVisible()
+
+      // Need to wait for lock duration to expire (lockDuration: 10 seconds)
+
+      await wait(10000)
+
+      await page.reload()
+
+      await expect(page.locator('.collections__card-list #card-admin .locked')).toBeHidden()
+
+      await page.locator('.card-admin a').click()
+
+      const modalContainer = page.locator('.payload__modal-container')
+      await expect(modalContainer).toBeHidden()
+    })
+  })
+
+  describe('stale data detection', () => {
+    let simpleDoc: Simple
+    let simpleWithVersionsDoc: Simple
+    let user2Context: BrowserContext
+    let user2Page: Page
+
+    beforeEach(async ({ browser }, testInfo) => {
+      testInfo.setTimeout(TEST_TIMEOUT_LONG)
+
+      simpleDoc = await payload.create({
+        collection: 'simple',
+        data: {
+          fieldA: 'Original A',
+          fieldB: 'Original B',
+        },
+        overrideAccess: true,
+      })
+
+      simpleWithVersionsDoc = await payload.create({
+        collection: 'simple-with-versions',
+        data: {
+          fieldA: 'Original A',
+          fieldB: 'Original B',
+        },
+        overrideAccess: true,
+      })
+
+      // Create a second browser context for user 2 (user 1 uses the parent test's page)
+      user2Context = await browser.newContext()
+      user2Page = await user2Context.newPage()
+
+      await user2Page.goto(`${serverURL}/admin`)
+      await user2Page.waitForURL(`**${serverURL}/admin**`)
+    })
+
+    test.afterEach(async () => {
+      // Clean up user 2's browser context
+      if (user2Context) {
+        await user2Context.close().catch(() => {
+          // Ignore close errors
+        })
+      }
+    })
+
+    describe('collections', () => {
+      test('should show stale data modal when user2 edits after user1 saves', async () => {
+        // Both users open the same document
+        await page.goto(simpleUrl.edit(simpleDoc.id))
+        await user2Page.goto(simpleUrl.edit(simpleDoc.id))
+
+        // User 1 makes a change and saves
+        const user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('User 1 Change')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit (should trigger stale data check)
+        const user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('User 2 Change')
+
+        await wait(500)
+
+        // Stale data modal should appear for user 2
+        const modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+        await expect(user2Page.locator('#document-stale-data .dialog-title')).toHaveText(
+          'Document modified',
+        )
+      })
+
+      test('should reload document and show latest data when clicking reload button', async () => {
+        // Both users open the same document
+        await page.goto(simpleUrl.edit(simpleDoc.id))
+        await user2Page.goto(simpleUrl.edit(simpleDoc.id))
+
+        // User 1 makes a change and saves
+        const user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('User 1 Updated Value')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit
+        const user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Should be discarded')
+
+        await wait(500)
+
+        // User 2 clicks reload button in modal
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        const modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeHidden()
+
+        // User 2 should now see User 1's changes
+        await expect(user2FieldA).toHaveValue('User 1 Updated Value')
+      })
+
+      test('should detect stale data across multiple save cycles for collection without versions', async () => {
+        // Both users open the same document
+        await page.goto(simpleUrl.edit(simpleDoc.id))
+        await user2Page.goto(simpleUrl.edit(simpleDoc.id))
+
+        // Cycle 1: User 1 saves
+        let user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 1 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and sees modal
+        let user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 1 - User 2 attempt')
+
+        await wait(500)
+
+        let modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 2: User 2 now saves
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 2 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 2 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 1 reloads
+        await page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 3: User 1 now saves
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 3 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and should see modal again
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 3 - User 2 attempt')
+
+        await wait(500)
+
+        modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 4: User 2 now saves
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 4 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 4 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+      })
+
+      test('should detect stale data across multiple save cycles for collection with versions', async () => {
+        // Both users open the same document
+        await page.goto(simpleWithVersionsUrl.edit(simpleWithVersionsDoc.id))
+        await user2Page.goto(simpleWithVersionsUrl.edit(simpleWithVersionsDoc.id))
+
+        // Cycle 1: User 1 saves
+        let user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 1 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and sees modal
+        let user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 1 - User 2 attempt')
+
+        await wait(500)
+
+        let modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 2: User 2 now saves
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 2 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 2 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 1 reloads
+        await page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 3: User 1 now saves
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 3 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and should see modal again
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 3 - User 2 attempt')
+
+        await wait(500)
+
+        modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 4: User 2 now saves
+        user2FieldA = user2Page.locator('#field-fieldA')
+        await user2FieldA.fill('Cycle 4 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('Cycle 4 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+      })
+
+      test('should not show modal if user edits their own saved changes', async () => {
+        await page.goto(simpleWithVersionsUrl.edit(simpleWithVersionsDoc.id))
+
+        // User 1 makes a change and saves as draft
+        const user1FieldA = page.locator('#field-fieldA')
+        await user1FieldA.fill('My First Change')
+        await page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 1 edits again (their own save)
+        await user1FieldA.fill('My Second Change')
+
+        await wait(500)
+
+        // Modal should NOT appear
+        const modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeHidden()
+
+        // User 1 saves draft again
+        await page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 1 edits a third time
+        await user1FieldA.fill('My Third Change')
+
+        await wait(500)
+
+        // Modal should still NOT appear
+        await expect(modalContainer).toBeHidden()
+      })
+
+      test('should not show stale data modal after autosave for same user with rapid edits', async () => {
+        const createdAutosaveIDs: string[] = []
+
+        // Create an autosave document
+        const autosaveDoc = await payload.create({
+          collection: 'autosave',
+          data: {
+            fieldA: 'Initial Value',
+            fieldB: 'Initial Value B',
+          },
+          overrideAccess: true,
+        })
+
+        createdAutosaveIDs.push(autosaveDoc.id)
+
+        await page.goto(autosaveUrl.edit(autosaveDoc.id))
+
+        // Simulate very slow CPU to create reliable race condition
+        const client = await page.context().newCDPSession(page)
+        await client.send('Emulation.setCPUThrottlingRate', { rate: 50 })
+
+        try {
+          const fieldA = page.locator('#field-fieldA')
+          const modalContainer = page.locator('.payload__modal-container')
+
+          // Make many rapid edits to create multiple queued autosaves
+          for (let i = 1; i <= 10; i++) {
+            await fieldA.fill(`Edit ${i}`)
+
+            await wait(30)
+          }
+
+          // Wait for all autosaves to process
+
+          await wait(2000)
+
+          // Make one more edit to trigger stale data check
+          await fieldA.fill('Final Edit')
+
+          await wait(500)
+
+          // Modal should NOT appear because it's the same user
+          await expect(modalContainer).toBeHidden()
+        } finally {
+          await client.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+          await client.detach()
+
+          // Clean up created autosave document
+          for (const id of createdAutosaveIDs) {
+            await payload.delete({ id, collection: 'autosave', overrideAccess: true }).catch(() => {
+              // Ignore deletion errors (document might already be deleted)
+            })
+          }
+        }
+      })
+
+      test('should not show stale data modal when user types and immediately saves (race condition)', async () => {
+        // This test simulates the race by intercepting the form-state POST to the
+        // document edit URL — Next.js dispatches server functions as a POST to the
+        // current page URL. TanStack Start routes form-state through a
+        // `createServerFn` (POST to `/_serverFn/...`), so `page.route(editUrl)` and
+        // `waitForRequest(POST editUrl)` never match and the test times out. The
+        // race-condition guard itself is framework-agnostic shared UI logic.
+        test.skip(
+          process.env.PAYLOAD_FRAMEWORK === 'tanstack-start',
+          'Intercepts the Next.js server-action POST to the page URL; form-state uses a different transport on TanStack.',
+        )
+
+        await page.goto(simpleUrl.edit(simpleDoc.id))
+
+        const fieldA = page.locator('#field-fieldA')
+        const editUrl = simpleUrl.edit(simpleDoc.id)
+        const modalContainer = page.locator('.payload__modal-container')
+
+        // Delay only the first POST (form-state from typing) by 3s to simulate the race:
+        // type → form-state starts (delayed) → save → DB updatedAt advances → delayed
+        // form-state reaches server and sees newer updatedAt → would incorrectly show modal.
+        // The second POST (post-save form-state from onSave) is not delayed so the toast works.
+        let firstPostDelayed = false
+        await page.route(editUrl, async (route) => {
+          if (route.request().method() === 'POST' && !firstPostDelayed) {
+            firstPostDelayed = true
+
+            await wait(3000)
+          }
+          try {
+            await route.continue()
+          } catch (_e) {
+            // route may have already been handled (e.g. after page.unroute)
+          }
+        })
+
+        // Wait for the form-state POST to be in-flight before saving — if the save
+        // completes first, modified is reset and the POST never fires at all.
+        const formStateInFlight = page.waitForRequest(
+          (req) => req.method() === 'POST' && req.url() === editUrl,
+          { timeout: 2000 },
+        )
+        await fieldA.fill('Race condition test')
+        await formStateInFlight
+
+        await page.click('#action-save')
+        await expect(page.locator('.payload-toast-container')).toContainText('successfully')
+
+        await page.unroute(editUrl)
+
+        await wait(4000)
+
+        await expect(modalContainer).toBeHidden()
+      })
+    })
+
+    describe('globals', () => {
+      test('should show stale data modal for globals when user2 edits after user1 saves', async () => {
+        // User 1 opens global and saves to establish initial updatedAt
+        await page.goto(globalUrl.global('menu'))
+        let user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Initial Global State')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // Both users now open the same global
+        await page.goto(globalUrl.global('menu'))
+        await user2Page.goto(globalUrl.global('menu'))
+
+        // User 1 makes a change and saves
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('User 1 Global Change')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit (should trigger stale data check)
+        const user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('User 2 Global Change')
+
+        await wait(500)
+
+        // Stale data modal should appear for user 2
+        const modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+        await expect(user2Page.locator('#document-stale-data .dialog-title')).toHaveText(
+          'Document modified',
+        )
+      })
+
+      test('should reload global and show latest data when clicking reload button', async () => {
+        // User 1 opens global and saves to establish initial updatedAt
+        await page.goto(globalUrl.global('menu'))
+        let user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Initial Global State')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // Both users now open the same global
+        await page.goto(globalUrl.global('menu'))
+        await user2Page.goto(globalUrl.global('menu'))
+
+        // User 1 makes a change and saves
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('User 1 Updated Global Value')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit
+        const user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('Should be discarded')
+
+        await wait(500)
+
+        // User 2 clicks reload button in modal
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        const modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeHidden()
+
+        // User 2 should now see User 1's changes
+        await expect(user2GlobalText).toHaveValue('User 1 Updated Global Value')
+      })
+
+      test('should detect stale data across multiple save cycles for globals', async () => {
+        // User 1 opens global and saves to establish initial updatedAt
+        await page.goto(globalUrl.global('menu'))
+        let user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Initial Global State')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // Both users now open the same global
+        await page.goto(globalUrl.global('menu'))
+        await user2Page.goto(globalUrl.global('menu'))
+
+        // Cycle 1: User 1 saves
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Cycle 1 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and sees modal
+        let user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('Cycle 1 - User 2 attempt')
+
+        await wait(500)
+
+        let modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 2: User 2 now saves
+        user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('Cycle 2 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Cycle 2 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 1 reloads
+        await page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 3: User 1 now saves
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Cycle 3 - User 1')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // User 2 tries to edit and should see modal again
+        user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('Cycle 3 - User 2 attempt')
+
+        await wait(500)
+
+        modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 4: User 2 now saves
+        user2GlobalText = user2Page.locator('#field-globalText')
+        await user2GlobalText.fill('Cycle 4 - User 2')
+        await saveDocAndAssert(user2Page)
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1GlobalText = page.locator('#field-globalText')
+        await user1GlobalText.fill('Cycle 4 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+      })
+
+      test('should show stale data modal for global with drafts when user2 edits after user1 saves draft', async () => {
+        // User 1 publishes the global first to establish a published version
+        await page.goto(globalUrl.global('global-with-versions'))
+        let user1TextField = page.locator('#field-text')
+        await user1TextField.fill('Initial Published Version')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // Both users now open the same global
+        await page.goto(globalUrl.global('global-with-versions'))
+        await user2Page.goto(globalUrl.global('global-with-versions'))
+
+        // Wait for both pages to be fully loaded and ready
+        user1TextField = page.locator('#field-text')
+        await expect(user1TextField).toBeVisible()
+        const user2TextField = user2Page.locator('#field-text')
+        await expect(user2TextField).toBeVisible()
+
+        await wait(500)
+
+        // User 1 makes a change and saves as draft
+        await user1TextField.fill('User 1 Draft Change')
+        await page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 2 tries to edit (should trigger stale data check)
+        await user2TextField.fill('User 2 Draft Change')
+
+        await wait(500)
+
+        // Stale data modal should appear for user 2
+        const modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+        await expect(user2Page.locator('#document-stale-data .dialog-title')).toHaveText(
+          'Document modified',
+        )
+      })
+
+      test('should detect stale data across multiple save cycles for global with drafts', async () => {
+        // User 1 publishes the global first to establish a published version
+        await page.goto(globalUrl.global('global-with-versions'))
+        let user1TextField = page.locator('#field-text')
+        await user1TextField.fill('Initial Published Version')
+        await saveDocAndAssert(page)
+
+        await wait(500)
+
+        // Both users now open the same global
+        await page.goto(globalUrl.global('global-with-versions'))
+        await user2Page.goto(globalUrl.global('global-with-versions'))
+
+        // Wait for both pages to be fully loaded and ready
+        user1TextField = page.locator('#field-text')
+        await expect(user1TextField).toBeVisible()
+        let user2TextField = user2Page.locator('#field-text')
+        await expect(user2TextField).toBeVisible()
+
+        await wait(500)
+
+        // Cycle 1: User 1 saves draft
+        await user1TextField.fill('Cycle 1 - User 1')
+        await page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 2 tries to edit and sees modal
+        await user2TextField.fill('Cycle 1 - User 2 attempt')
+
+        await wait(500)
+
+        let modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 2: User 2 now saves draft
+        user2TextField = user2Page.locator('#field-text')
+        await user2TextField.fill('Cycle 2 - User 2')
+        await user2Page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1TextField = page.locator('#field-text')
+        await user1TextField.fill('Cycle 2 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 1 reloads
+        await page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 3: User 1 now saves draft
+        user1TextField = page.locator('#field-text')
+        await user1TextField.fill('Cycle 3 - User 1')
+        await page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 2 tries to edit and should see modal again
+        user2TextField = user2Page.locator('#field-text')
+        await user2TextField.fill('Cycle 3 - User 2 attempt')
+
+        await wait(500)
+
+        modalContainer = user2Page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+
+        // User 2 reloads
+        await user2Page.locator('#document-stale-data-confirm').click()
+
+        await wait(500)
+
+        // Cycle 4: User 2 now saves draft
+        user2TextField = user2Page.locator('#field-text')
+        await user2TextField.fill('Cycle 4 - User 2')
+        await user2Page.locator('#action-save-draft').click()
+
+        await wait(500)
+
+        // User 1 tries to edit and should see modal again
+        user1TextField = page.locator('#field-text')
+        await user1TextField.fill('Cycle 4 - User 1 attempt')
+
+        await wait(500)
+
+        modalContainer = page.locator('.payload__modal-container')
+        await expect(modalContainer).toBeVisible()
+      })
+
+      test('should not show stale data modal for autosave-enabled global with rapid edits', async () => {
+        await page.goto(globalUrl.global('autosave-global'))
+
+        // Simulate very slow CPU to create reliable race condition
+        const client = await page.context().newCDPSession(page)
+        await client.send('Emulation.setCPUThrottlingRate', { rate: 50 })
+
+        try {
+          const textField = page.locator('#field-text')
+          const modalContainer = page.locator('.payload__modal-container')
+
+          // Make many rapid edits to create multiple queued autosaves
+          for (let i = 1; i <= 10; i++) {
+            await textField.fill(`Edit ${i}`)
+
+            await wait(30)
+          }
+
+          // Wait for all autosaves to process
+
+          await wait(2000)
+
+          // Make one more edit to trigger stale data check
+          await textField.fill('Final Edit')
+
+          await wait(500)
+
+          // Modal should NOT appear because stale check is disabled for autosave-enabled globals
+          await expect(modalContainer).toBeHidden()
+        } finally {
+          await client.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+          await client.detach()
+        }
+      })
+    })
+  })
+})
+
+async function createPageDoc(data: Partial<PageType>): Promise<PageType> {
+  return payload.create({
+    collection: 'pages',
+    data,
+    overrideAccess: true,
+  })
+}
+
+async function createPostDoc(data: Partial<Post>): Promise<Post> {
+  return payload.create({
+    collection: 'posts',
+    data,
+    overrideAccess: true,
+  })
+}
+
+async function createTestDoc(data: Partial<Test>): Promise<Test> {
+  return payload.create({
+    collection: 'tests',
+    data,
+    overrideAccess: true,
+  })
+}

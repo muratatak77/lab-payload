@@ -1,0 +1,1813 @@
+import type { CollectionSlug, Payload } from 'payload'
+
+import * as qs from 'qs-esm'
+import { fileURLToPath } from 'url'
+import { expect } from 'vitest'
+
+import type { Draft, Orderable, OrderableJoin } from './payload-types.js'
+
+import { test } from '../__helpers/int/vitest.js'
+import { draftsSlug } from './collections/Drafts/index.js'
+import { nonUniqueSortSlug } from './collections/NonUniqueSort/index.js'
+import { orderableSlug } from './collections/Orderable/index.js'
+import { orderableJoinSlug } from './collections/OrderableJoin/index.js'
+
+test.suite('Sort', { config: './config.ts', resetBetweenTests: false }, () => {
+  test.describe('Local API', () => {
+    test.beforeAll(async ({ payloadInstance: payload }) => {
+      await createData(payload, 'posts', [
+        { group: { number: 100 }, number: 1, number2: 10, text: 'Post 1' },
+        { group: { number: 200 }, number: 2, number2: 10, text: 'Post 2' },
+        { group: { number: 150 }, number: 3, number2: 5, text: 'Post 3' },
+        { group: { number: 200 }, number: 10, number2: 5, text: 'Post 10' },
+        { group: { number: 150 }, number: 11, number2: 20, text: 'Post 11' },
+        { group: { number: 100 }, number: 12, number2: 20, text: 'Post 12' },
+      ])
+      await createData(payload, 'default-sort', [
+        { number: 5, text: 'Post default-5 b' },
+        { number: 10, text: 'Post default-10' },
+        { number: 5, text: 'Post default-5 a' },
+        { number: 1, text: 'Post default-1' },
+      ])
+    })
+
+    test.afterAll(async ({ payloadInstance }) => {
+      await payloadInstance.delete({ collection: 'posts', overrideAccess: true, where: {} })
+      await payloadInstance.delete({ collection: 'default-sort', overrideAccess: true, where: {} })
+    })
+
+    test.describe('Default sort', () => {
+      test('should sort posts by default definition in collection', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'default-sort',
+          overrideAccess: true, // 'number,-text'
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post default-1',
+          'Post default-5 b',
+          'Post default-5 a',
+          'Post default-10',
+        ])
+      })
+    })
+
+    test.describe('Single sort field', () => {
+      test('should sort posts by text field', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: 'text',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 1',
+          'Post 10',
+          'Post 11',
+          'Post 12',
+          'Post 2',
+          'Post 3',
+        ])
+      })
+
+      test('should sort posts by text field desc', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: '-text',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 3',
+          'Post 2',
+          'Post 12',
+          'Post 11',
+          'Post 10',
+          'Post 1',
+        ])
+      })
+
+      test('should sort posts by number field', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: 'number',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 1',
+          'Post 2',
+          'Post 3',
+          'Post 10',
+          'Post 11',
+          'Post 12',
+        ])
+      })
+
+      test('should sort posts by number field desc', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: '-number',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 12',
+          'Post 11',
+          'Post 10',
+          'Post 3',
+          'Post 2',
+          'Post 1',
+        ])
+      })
+    })
+
+    test.describe('Non-unique sorting', () => {
+      // There are situations where the sort order is not guaranteed to be consistent, such as when sorting by a non-unique field in MongoDB which does not keep an internal order of items
+      // As a result, every time you fetch, including fetching specific pages, the order of items may change and appear as duplicated to some users.
+      test('should always be consistent when sorting', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: nonUniqueSortSlug,
+          overrideAccess: true,
+          sort: 'order',
+        })
+
+        const initialMap = posts.docs.map((post) => post.title)
+
+        const dataFetches = await Promise.all(
+          Array.from({ length: 3 }).map(() =>
+            payload.find({
+              collection: nonUniqueSortSlug,
+              overrideAccess: true,
+              sort: 'order',
+            }),
+          ),
+        )
+
+        const [fetch1, fetch2, fetch3] = dataFetches.map((fetch) =>
+          fetch.docs.map((post) => post.title),
+        )
+
+        expect(fetch1).toEqual(initialMap)
+
+        expect(fetch2).toEqual(initialMap)
+
+        expect(fetch3).toEqual(initialMap)
+      })
+
+      test('should always be consistent when sorting - with limited pages', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: nonUniqueSortSlug,
+          limit: 5,
+          overrideAccess: true,
+          page: 2,
+          sort: 'order',
+        })
+
+        const initialMap = posts.docs.map((post) => post.title)
+
+        const dataFetches = await Promise.all(
+          Array.from({ length: 3 }).map(() =>
+            payload.find({
+              collection: nonUniqueSortSlug,
+              limit: 5,
+              overrideAccess: true,
+              page: 2,
+              sort: 'order',
+            }),
+          ),
+        )
+
+        const [fetch1, fetch2, fetch3] = dataFetches.map((fetch) =>
+          fetch.docs.map((post) => post.title),
+        )
+
+        expect(fetch1).toEqual(initialMap)
+
+        expect(fetch2).toEqual(initialMap)
+
+        expect(fetch3).toEqual(initialMap)
+      })
+
+      test('should sort by createdAt as fallback', async ({ payload }) => {
+        // This is the (reverse - newest first) order that the posts are created in so this should remain consistent as the sort should fallback to '-createdAt'
+        const postsInOrder = ['Post 9', 'Post 8', 'Post 7', 'Post 6']
+
+        const dataFetches = await Promise.all(
+          Array.from({ length: 3 }).map(() =>
+            payload.find({
+              collection: nonUniqueSortSlug,
+              limit: 4,
+              overrideAccess: true,
+              page: 2,
+              sort: 'order',
+            }),
+          ),
+        )
+
+        const [fetch1, fetch2, fetch3] = dataFetches.map((fetch) =>
+          fetch.docs.map((post) => post.title),
+        )
+
+        console.log({ fetch1, fetch2, fetch3 })
+
+        expect(fetch1).toEqual(postsInOrder)
+
+        expect(fetch2).toEqual(postsInOrder)
+
+        expect(fetch3).toEqual(postsInOrder)
+      })
+
+      test('should always be consistent without sort params in the query', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: nonUniqueSortSlug,
+          overrideAccess: true,
+        })
+
+        const initialMap = posts.docs.map((post) => post.title)
+
+        const dataFetches = await Promise.all(
+          Array.from({ length: 3 }).map(() =>
+            payload.find({
+              collection: nonUniqueSortSlug,
+              overrideAccess: true,
+            }),
+          ),
+        )
+
+        const [fetch1, fetch2, fetch3] = dataFetches.map((fetch) =>
+          fetch.docs.map((post) => post.title),
+        )
+
+        expect(fetch1).toEqual(initialMap)
+
+        expect(fetch2).toEqual(initialMap)
+
+        expect(fetch3).toEqual(initialMap)
+      })
+
+      test('should always be consistent without sort params in the query - with limited pages', async ({
+        payload,
+      }) => {
+        const posts = await payload.find({
+          collection: nonUniqueSortSlug,
+          limit: 4,
+          overrideAccess: true,
+          page: 2,
+        })
+
+        const initialMap = posts.docs.map((post) => post.title)
+
+        const dataFetches = await Promise.all(
+          Array.from({ length: 3 }).map(() =>
+            payload.find({
+              collection: nonUniqueSortSlug,
+              limit: 4,
+              overrideAccess: true,
+              page: 2,
+            }),
+          ),
+        )
+
+        const [fetch1, fetch2, fetch3] = dataFetches.map((fetch) =>
+          fetch.docs.map((post) => post.title),
+        )
+
+        expect(fetch1).toEqual(initialMap)
+
+        expect(fetch2).toEqual(initialMap)
+
+        expect(fetch3).toEqual(initialMap)
+      })
+    })
+
+    test.describe('Sort by multiple fields', () => {
+      test('should sort posts by multiple fields', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: ['number2', 'number'],
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 3', // 5, 3
+          'Post 10', // 5, 10
+          'Post 1', // 10, 1
+          'Post 2', // 10, 2
+          'Post 11', // 20, 11
+          'Post 12', // 20, 12
+        ])
+      })
+
+      test('should sort posts by multiple fields asc and desc', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: ['number2', '-number'],
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 10', // 5, 10
+          'Post 3', // 5, 3
+          'Post 2', // 10, 2
+          'Post 1', // 10, 1
+          'Post 12', // 20, 12
+          'Post 11', // 20, 11
+        ])
+      })
+
+      test('should sort posts by multiple fields with group', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'posts',
+          overrideAccess: true,
+          sort: ['-group.number', '-number'],
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 10', // 200, 10
+          'Post 2', // 200, 2
+          'Post 11', // 150, 11
+          'Post 3', // 150, 3
+          'Post 12', // 100, 12
+          'Post 1', // 100, 1
+        ])
+      })
+    })
+
+    test.describe('Sort with drafts', () => {
+      test.beforeAll(async ({ payloadInstance: payload }) => {
+        const testData1 = await payload.create({
+          collection: 'drafts',
+          data: { number: 10, text: 'Post 1 draft' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData1.id,
+          collection: 'drafts',
+          data: { number: 20, text: 'Post 1 draft updated' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData1.id,
+          collection: 'drafts',
+          data: { number: 30, text: 'Post 1 draft updated' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData1.id,
+          collection: 'drafts',
+          data: { number: 15, text: 'Post 1 published' },
+          draft: false,
+          overrideAccess: true,
+        })
+        const testData2 = await payload.create({
+          collection: 'drafts',
+          data: { number: 1, text: 'Post 2 draft' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData2.id,
+          collection: 'drafts',
+          data: { number: 2, text: 'Post 2 published' },
+          draft: false,
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData2.id,
+          collection: 'drafts',
+          data: { number: 100, text: 'Post 2 newdraft' },
+          draft: true,
+          overrideAccess: true,
+        })
+        await payload.create({
+          collection: 'drafts',
+          data: { number: 3, text: 'Post 3 draft' },
+          draft: true,
+          overrideAccess: true,
+        })
+      })
+
+      test('should sort latest without draft', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'drafts',
+          draft: false,
+          overrideAccess: true,
+          sort: 'number',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 2 published', // 2
+          'Post 3 draft', // 3
+          'Post 1 published', // 15
+        ])
+      })
+
+      test('should sort latest with draft', async ({ payload }) => {
+        const posts = await payload.find({
+          collection: 'drafts',
+          draft: true,
+          overrideAccess: true,
+          sort: 'number',
+        })
+
+        expect(posts.docs.map((post) => post.text)).toEqual([
+          'Post 3 draft', // 3
+          'Post 1 published', // 15
+          'Post 2 newdraft', // 100
+        ])
+      })
+
+      test('should sort versions', async ({ payload }) => {
+        const posts = await payload.findVersions({
+          collection: 'drafts',
+          draft: false,
+          overrideAccess: true,
+          sort: 'version.number',
+        })
+
+        expect(posts.docs.map((post) => post.version.text)).toEqual([
+          'Post 2 draft', // 1
+          'Post 2 published', // 2
+          'Post 3 draft', // 3
+          'Post 1 draft', // 10
+          'Post 1 published', // 15
+          'Post 1 draft updated', // 20
+          'Post 1 draft updated', // 30
+          'Post 2 newdraft', // 100
+        ])
+      })
+    })
+
+    test.describe('Localized sort', () => {
+      test.beforeAll(async ({ payloadInstance: payload }) => {
+        const testData1 = await payload.create({
+          collection: 'localized',
+          data: { number: 10, text: 'Post 1 english' },
+          locale: 'en',
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData1.id,
+          collection: 'localized',
+          data: { number: 20, text: 'Post 1 norsk' },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+        const testData2 = await payload.create({
+          collection: 'localized',
+          data: { number: 25, text: 'Post 2 english' },
+          locale: 'en',
+          overrideAccess: true,
+        })
+        await payload.update({
+          id: testData2.id,
+          collection: 'localized',
+          data: { number: 5, text: 'Post 2 norsk' },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+      })
+
+      test('should sort localized field', async ({ payload }) => {
+        const englishPosts = await payload.find({
+          collection: 'localized',
+          locale: 'en',
+          overrideAccess: true,
+          sort: 'number',
+        })
+
+        expect(englishPosts.docs.map((post) => post.text)).toEqual([
+          'Post 1 english', // 10
+          'Post 2 english', // 20
+        ])
+
+        const norwegianPosts = await payload.find({
+          collection: 'localized',
+          locale: 'nb',
+          overrideAccess: true,
+          sort: 'number',
+        })
+
+        expect(norwegianPosts.docs.map((post) => post.text)).toEqual([
+          'Post 2 norsk', // 5
+          'Post 1 norsk', // 25
+        ])
+      })
+    })
+
+    test.describe('Orderable', () => {
+      const createdOrderableIDs: Orderable['id'][] = []
+      let orderable1: Orderable
+      let orderable2: Orderable
+      let orderableDraft1: Draft
+      let orderableDraft2: Draft
+
+      test.beforeAll(async ({ payloadInstance: payload }) => {
+        orderable1 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            title: 'Orderable 1',
+          },
+          overrideAccess: true,
+        })
+        orderable2 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            title: 'Orderable 2',
+          },
+          overrideAccess: true,
+        })
+        orderableDraft1 = await payload.create({
+          collection: draftsSlug,
+          data: {
+            _status: 'draft',
+            text: 'Orderable 1',
+          },
+          overrideAccess: true,
+        })
+        orderableDraft2 = await payload.create({
+          collection: draftsSlug,
+          data: {
+            _status: 'draft',
+            text: 'Orderable 2',
+          },
+          overrideAccess: true,
+        })
+      })
+
+      test.afterEach(async ({ payload }) => {
+        for (const id of createdOrderableIDs) {
+          await payload.delete({ id, collection: orderableSlug, overrideAccess: true })
+        }
+        createdOrderableIDs.length = 0
+      })
+
+      test('should set order by default', async ({ payload }) => {
+        const ordered = await payload.find({
+          collection: orderableSlug,
+          overrideAccess: true,
+          where: {
+            title: {
+              contains: 'Orderable ',
+            },
+          },
+        })
+
+        expect(orderable1._order).toBeDefined()
+        expect(orderable2._order).toBeDefined()
+        expect(parseInt(orderable1._order, 36)).toBeLessThan(parseInt(orderable2._order, 36))
+        expect(ordered.docs[0].id).toStrictEqual(orderable1.id)
+        expect(ordered.docs[1].id).toStrictEqual(orderable2.id)
+      })
+
+      test('should allow reordering with REST API', async ({ payload, restClient }) => {
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [orderable1.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: orderable2.id,
+              key: orderable2._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const ordered = await payload.find({
+          collection: 'orderable',
+          overrideAccess: true,
+          where: {
+            title: {
+              contains: 'Orderable ',
+            },
+          },
+        })
+
+        expect(parseInt(ordered.docs[0]._order, 36)).toBeLessThan(
+          parseInt(ordered.docs[1]._order, 36),
+        )
+      })
+
+      test('should reject fields that are not configured for ordering', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Original title' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(doc.id)
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [doc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: 'title',
+            target: {
+              id: orderable2.id,
+              key: orderable2._order,
+            },
+          }),
+        })
+        const storedDoc = await payload.findByID({
+          id: doc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res.status).toBe(400)
+        expect(storedDoc.title).toBe('Original title')
+      })
+
+      test('should reorder multiple documents in one request', async ({ payload, restClient }) => {
+        const firstDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'First queued item' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(firstDoc.id)
+        const secondDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Second queued item' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(secondDoc.id)
+        const firstOrder = firstDoc._order
+        const secondOrder = secondDoc._order
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [firstDoc.id, secondDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: orderable1.id,
+              key: orderable1._order,
+            },
+          }),
+        })
+        const storedFirstDoc = await payload.findByID({
+          id: firstDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+        const storedSecondDoc = await payload.findByID({
+          id: secondDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res.status).toBe(200)
+        expect(storedFirstDoc._order).not.toBe(firstOrder)
+        expect(storedSecondDoc._order).not.toBe(secondOrder)
+        expect(storedFirstDoc._order < storedSecondDoc._order).toBe(true)
+      })
+
+      test('should leave a batch unchanged when one document is excluded', async ({
+        payload,
+        restClient,
+      }) => {
+        const movableDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Movable position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(movableDoc.id)
+        const fixedDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Fixed position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(fixedDoc.id)
+        const movableOrder = movableDoc._order
+        const fixedOrder = fixedDoc._order
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [movableDoc.id, fixedDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: orderable1.id,
+              key: orderable1._order,
+            },
+          }),
+        })
+        const storedMovableDoc = await payload.findByID({
+          id: movableDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+        const storedFixedDoc = await payload.findByID({
+          id: fixedDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res.status).toBe(403)
+        expect(storedMovableDoc._order).toBe(movableOrder)
+        expect(storedFixedDoc._order).toBe(fixedOrder)
+      })
+
+      test('should leave a batch unchanged when proposed data is excluded', async ({
+        payload,
+        restClient,
+      }) => {
+        const movableDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'First movable position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(movableDoc.id)
+        const fixedDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Second movable position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(fixedDoc.id)
+        const movableOrder = movableDoc._order
+        const fixedOrder = fixedDoc._order
+        const collection = payload.config.collections.find(({ slug }) => slug === orderableSlug)
+
+        if (!collection) {
+          throw new Error('Orderable collection not found')
+        }
+
+        const originalUpdateAccess = collection.access.update
+        collection.access.update = ({ id, data }) => id !== fixedDoc.id || !data?._order
+
+        let res: Response
+        try {
+          res = await restClient.POST('/reorder', {
+            body: JSON.stringify({
+              collectionSlug: orderableSlug,
+              docsToMove: [movableDoc.id, fixedDoc.id],
+              newKeyWillBe: 'greater',
+              orderableFieldName: '_order',
+              target: {
+                id: orderable1.id,
+                key: orderable1._order,
+              },
+            }),
+          })
+        } finally {
+          collection.access.update = originalUpdateAccess
+        }
+
+        const storedMovableDoc = await payload.findByID({
+          id: movableDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+        const storedFixedDoc = await payload.findByID({
+          id: fixedDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res!.status).toBe(403)
+        expect(storedMovableDoc._order).toBe(movableOrder)
+        expect(storedFixedDoc._order).toBe(fixedOrder)
+      })
+
+      test('should respect document update constraints when reordering', async ({
+        payload,
+        restClient,
+      }) => {
+        const doc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Fixed position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(doc.id)
+        const originalOrder = doc._order
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [doc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: orderable1.id,
+              key: orderable1._order,
+            },
+          }),
+        })
+        const storedDoc = await payload.findByID({
+          id: doc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res.status).toBe(403)
+        expect(storedDoc._order).toBe(originalOrder)
+      })
+
+      test('should keep order initialization unchanged when one document is excluded', async ({
+        payload,
+        restClient,
+      }) => {
+        const fixedDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Fixed position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(fixedDoc.id)
+        const movableDoc = await payload.create({
+          collection: orderableSlug,
+          data: { title: 'Movable position' },
+          overrideAccess: true,
+        })
+        createdOrderableIDs.push(movableDoc.id)
+
+        await payload.db.updateOne({
+          id: movableDoc.id,
+          collection: orderableSlug,
+          data: { _order: null },
+        })
+        await payload.db.updateOne({
+          id: fixedDoc.id,
+          collection: orderableSlug,
+          data: { _order: null },
+        })
+
+        const originalBeginTransaction = payload.db.beginTransaction
+        payload.db.beginTransaction = () => Promise.resolve(null as never)
+
+        let res: Response
+        try {
+          res = await restClient.POST('/reorder', {
+            body: JSON.stringify({
+              collectionSlug: orderableSlug,
+              docsToMove: [movableDoc.id],
+              newKeyWillBe: 'greater',
+              orderableFieldName: '_order',
+              target: {
+                id: movableDoc.id,
+                key: '',
+              },
+            }),
+          })
+        } finally {
+          payload.db.beginTransaction = originalBeginTransaction
+        }
+
+        const storedMovableDoc = await payload.findByID({
+          id: movableDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+        const storedFixedDoc = await payload.findByID({
+          id: fixedDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(res!.status).toBe(403)
+        expect(storedMovableDoc._order).toBeNull()
+        expect(storedFixedDoc._order).toBeNull()
+      })
+
+      test('should allow reordering with REST API with drafts enabled', async ({
+        payload,
+        restClient,
+      }) => {
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: draftsSlug,
+            docsToMove: [orderableDraft1.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: orderableDraft2.id,
+              key: orderableDraft2._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const ordered = await payload.find({
+          collection: draftsSlug,
+          draft: true,
+          overrideAccess: true,
+          where: {
+            text: {
+              contains: 'Orderable ',
+            },
+          },
+        })
+
+        expect(ordered.docs).toHaveLength(2)
+
+        expect(parseInt(ordered.docs[0]._order, 36)).toBeLessThan(
+          parseInt(ordered.docs[1]._order, 36),
+        )
+      })
+
+      test('should not unpublish a published document with a newer draft when reordering', async ({
+        payload,
+        restClient,
+      }) => {
+        const publishedDoc = await payload.create({
+          collection: draftsSlug,
+          data: {
+            _status: 'published',
+            text: 'Published with newer draft',
+          },
+          overrideAccess: true,
+        })
+
+        const target = await payload.create({
+          collection: draftsSlug,
+          data: {
+            _status: 'published',
+            text: 'Reorder target',
+          },
+          overrideAccess: true,
+        })
+
+        // Create a newer draft on top of the published version
+        await payload.update({
+          id: publishedDoc.id,
+          collection: draftsSlug,
+          data: {
+            text: 'Published with newer draft - edited',
+          },
+          draft: true,
+          overrideAccess: true,
+        })
+
+        const beforeReorder = await payload.findByID({
+          id: publishedDoc.id,
+          collection: draftsSlug,
+          overrideAccess: true,
+        })
+
+        expect(beforeReorder._status).toBe('published')
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: draftsSlug,
+            docsToMove: [publishedDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: target.id,
+              key: target._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const afterReorder = await payload.findByID({
+          id: publishedDoc.id,
+          collection: draftsSlug,
+          overrideAccess: true,
+        })
+
+        // Reordering must not unpublish the document
+        expect(afterReorder._status).toBe('published')
+
+        const published = await payload.find({
+          collection: draftsSlug,
+          overrideAccess: true,
+          where: {
+            id: {
+              equals: publishedDoc.id,
+            },
+          },
+        })
+
+        expect(published.docs).toHaveLength(1)
+      })
+
+      test('should allow to duplicate with reordable', async ({ payload, restClient }) => {
+        const doc = await payload.create({
+          collection: 'orderable',
+          data: { title: 'new document' },
+          overrideAccess: true,
+        })
+
+        const docDuplicated = await payload.create({
+          collection: 'orderable',
+          data: {},
+          duplicateFromID: doc.id,
+          overrideAccess: true,
+        })
+        expect(docDuplicated.title).toBe('new document')
+        expect(parseInt(doc._order, 36)).toBeLessThan(parseInt(docDuplicated._order, 36))
+
+        await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [doc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: docDuplicated.id,
+              key: docDuplicated._order,
+            },
+          }),
+        })
+
+        const docAfterReorder = await payload.findByID({
+          id: doc.id,
+          collection: 'orderable',
+          overrideAccess: true,
+        })
+        const docDuplicatedAfterReorder = await payload.findByID({
+          id: docDuplicated.id,
+          collection: 'orderable',
+          overrideAccess: true,
+        })
+        expect(parseInt(docAfterReorder._order, 36)).toBeGreaterThan(
+          parseInt(docDuplicatedAfterReorder._order, 36),
+        )
+      })
+
+      test('should not break with existing base 62 digits', async ({ payload, restClient }) => {
+        const collection = orderableSlug
+        // create seed docs with aa, aA, a0 (legacy base64 chars for backward compatibility)
+        const aa = await payload.create({
+          collection,
+          data: {
+            _order: 'aa',
+            title: 'Base62 aa',
+          },
+          overrideAccess: true,
+        })
+        const aA = await payload.create({
+          collection,
+          data: {
+            _order: 'aA',
+            title: 'Base62 aA',
+          },
+          overrideAccess: true,
+        })
+        const a0 = await payload.create({
+          collection,
+          data: {
+            _order: 'a0',
+            title: 'Base62 a0',
+          },
+          overrideAccess: true,
+        })
+
+        const orderableDoc = await payload.create({
+          collection,
+          data: {
+            title: 'Base62 new',
+          },
+          overrideAccess: true,
+        })
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [orderableDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: aA.id,
+              key: aA._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const { docs } = await payload.find({
+          collection,
+          overrideAccess: true,
+          sort: '-_order',
+          where: {
+            title: {
+              contains: 'Base62 ',
+            },
+          },
+        })
+
+        expect(docs).toHaveLength(4)
+        const ids = [aa.id, aA.id, a0.id, orderableDoc.id]
+        expect(docs.every(({ id }) => ids.includes(id))).toBe(true)
+
+        const a0Index = docs.findIndex((d) => d.id === a0.id)
+        const aAIndex = docs.findIndex((d) => d.id === aA.id)
+        const orderableIndex = docs.findIndex((d) => d.id === orderableDoc.id)
+
+        // The reordered document should be positioned after the target (aA) since newKeyWillBe: 'greater'
+        // and before the target (a0) since (a0) is the smallest fractional index
+        expect(orderableIndex).toBeGreaterThan(aAIndex)
+        expect(orderableIndex).toBeLessThan(a0Index)
+      })
+
+      test('should generate case-insensitive-safe keys when moving to first position', async ({
+        payload,
+        restClient,
+      }) => {
+        const collection = orderableSlug
+
+        const { docs: allDocs } = await payload.find({
+          collection,
+          limit: 1,
+          overrideAccess: true,
+          sort: '_order',
+        })
+        expect(allDocs).toHaveLength(1)
+        const firstDoc = allDocs[0]!
+
+        const newDoc = await payload.create({
+          collection,
+          data: { title: 'Move to first test' },
+          overrideAccess: true,
+        })
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: collection,
+            docsToMove: [newDoc.id],
+            newKeyWillBe: 'less',
+            orderableFieldName: '_order',
+            target: {
+              id: firstDoc.id,
+              key: firstDoc._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const newDocAfter = await payload.findByID({
+          id: newDoc.id,
+          collection,
+          overrideAccess: true,
+        })
+
+        expect(newDocAfter._order).toMatch(/^\d/)
+        expect(parseInt(newDocAfter._order, 36)).toBeLessThan(parseInt(firstDoc._order, 36))
+      })
+
+      test('should allow multiple reorders to absolute first position', async ({
+        payload,
+        restClient,
+      }) => {
+        const collection = orderableSlug
+
+        const { docs: initialDocs } = await payload.find({
+          collection,
+          limit: 1,
+          overrideAccess: true,
+          sort: '_order',
+        })
+        expect(initialDocs).toHaveLength(1)
+        const originalFirst = initialDocs[0]!
+
+        const docA = await payload.create({
+          collection,
+          data: { title: 'Multi first A' },
+          overrideAccess: true,
+        })
+
+        const docB = await payload.create({
+          collection,
+          data: { title: 'Multi first B' },
+          overrideAccess: true,
+        })
+
+        await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: collection,
+            docsToMove: [docA.id],
+            newKeyWillBe: 'less',
+            orderableFieldName: '_order',
+            target: {
+              id: originalFirst.id,
+              key: originalFirst._order,
+            },
+          }),
+        })
+
+        const docAAfter = await payload.findByID({ id: docA.id, collection, overrideAccess: true })
+        expect(docAAfter._order).toMatch(/^\d/)
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: collection,
+            docsToMove: [docB.id],
+            newKeyWillBe: 'less',
+            orderableFieldName: '_order',
+            target: {
+              id: docA.id,
+              key: docAAfter._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const docBAfter = await payload.findByID({ id: docB.id, collection, overrideAccess: true })
+
+        expect(docBAfter._order).toMatch(/^\d/)
+        expect(parseInt(docBAfter._order, 36)).toBeLessThan(parseInt(docAAfter._order, 36))
+      })
+
+      test('should handle moving doc from first position and back', async ({
+        payload,
+        restClient,
+      }) => {
+        const collection = orderableSlug
+
+        const { docs: initialDocs } = await payload.find({
+          collection,
+          limit: 2,
+          overrideAccess: true,
+          sort: '_order',
+        })
+        expect(initialDocs.length).toBeGreaterThanOrEqual(2)
+        const firstDoc = initialDocs[0]!
+        const secondDoc = initialDocs[1]!
+
+        await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: collection,
+            docsToMove: [firstDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_order',
+            target: {
+              id: secondDoc.id,
+              key: secondDoc._order,
+            },
+          }),
+        })
+
+        const firstDocMoved = await payload.findByID({
+          id: firstDoc.id,
+          collection,
+          overrideAccess: true,
+        })
+        expect(parseInt(firstDocMoved._order, 36)).toBeGreaterThan(parseInt(secondDoc._order, 36))
+
+        const res = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: collection,
+            docsToMove: [firstDoc.id],
+            newKeyWillBe: 'less',
+            orderableFieldName: '_order',
+            target: {
+              id: secondDoc.id,
+              key: secondDoc._order,
+            },
+          }),
+        })
+
+        expect(res.status).toStrictEqual(200)
+
+        const firstDocBack = await payload.findByID({
+          id: firstDoc.id,
+          collection,
+          overrideAccess: true,
+        })
+        expect(parseInt(firstDocBack._order, 36)).toBeLessThan(parseInt(secondDoc._order, 36))
+      })
+    })
+
+    test.describe('Orderable join', () => {
+      let related: OrderableJoin
+      let orderable1: Orderable
+      let orderable2: Orderable
+      let orderable3: Orderable
+
+      test.beforeAll(async ({ payloadInstance: payload }) => {
+        related = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'test',
+          },
+          overrideAccess: true,
+        })
+        orderable1 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            orderableField: related.id,
+            title: 'test 1',
+          },
+          overrideAccess: true,
+        })
+
+        orderable2 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            orderableField: related.id,
+            title: 'test 2',
+          },
+          overrideAccess: true,
+        })
+
+        orderable3 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            orderableField: related.id,
+            title: 'test 3',
+          },
+          overrideAccess: true,
+        })
+      })
+
+      test('should set order by default', () => {
+        expect(orderable1._orderable_orderableJoinField1_order).toBeDefined()
+      })
+
+      test('should allow setting the order with the local API', async ({ payload }) => {
+        // create two orderableJoinSlug docs
+        orderable2 = await payload.update({
+          id: orderable2.id,
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'e4',
+            orderableField: related.id,
+            title: 'test',
+          },
+          overrideAccess: true,
+        })
+        const orderable4 = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'e2',
+            orderableField: related.id,
+            title: 'test',
+          },
+          overrideAccess: true,
+        })
+        expect(orderable2._orderable_orderableJoinField1_order).toBe('e4')
+        expect(orderable4._orderable_orderableJoinField1_order).toBe('e2')
+      })
+
+      test('should sort join docs in the correct', async ({ payload }) => {
+        related = await payload.findByID({
+          id: related.id,
+          collection: orderableJoinSlug,
+          depth: 1,
+          overrideAccess: true,
+        })
+        const orders = (related.orderableJoinField1 as { docs: Orderable[] }).docs.map((doc) =>
+          parseInt(doc._orderable_orderableJoinField1_order, 36),
+        ) as [number, number, number]
+        expect(orders[0]).toBeLessThan(orders[1])
+        expect(orders[1]).toBeLessThan(orders[2])
+      })
+
+      test('should scope join reorder keys to the same parent relation', async ({
+        payload,
+        restClient,
+      }) => {
+        const scopedParent = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'scoped parent',
+          },
+          overrideAccess: true,
+        })
+        const otherParent = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'other parent',
+          },
+          overrideAccess: true,
+        })
+
+        const scopedTarget = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a0',
+            orderableField: scopedParent.id,
+            title: 'scoped target',
+          },
+          overrideAccess: true,
+        })
+
+        const scopedNeighbor = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a2',
+            orderableField: scopedParent.id,
+            title: 'scoped neighbor',
+          },
+          overrideAccess: true,
+        })
+
+        const scopedMovedDoc = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a3',
+            orderableField: scopedParent.id,
+            title: 'scoped moved',
+          },
+          overrideAccess: true,
+        })
+
+        await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a1',
+            orderableField: otherParent.id,
+            title: 'other scope doc',
+          },
+          overrideAccess: true,
+        })
+
+        const reorderResponse = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [scopedMovedDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_orderable_orderableJoinField1_order',
+            target: {
+              id: scopedTarget.id,
+              key: scopedTarget._orderable_orderableJoinField1_order,
+            },
+          }),
+        })
+
+        expect(reorderResponse.status).toStrictEqual(200)
+
+        const reorderBody = await reorderResponse.json()
+
+        expect(reorderBody.orderValues?.[0]).toBe('a1')
+
+        const scopedMovedDocAfter = await payload.findByID({
+          id: scopedMovedDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(scopedMovedDocAfter._orderable_orderableJoinField1_order).toBe('a1')
+        expect(
+          scopedTarget._orderable_orderableJoinField1_order <
+            scopedMovedDocAfter._orderable_orderableJoinField1_order,
+        ).toBe(true)
+        expect(
+          scopedMovedDocAfter._orderable_orderableJoinField1_order <
+            scopedNeighbor._orderable_orderableJoinField1_order,
+        ).toBe(true)
+      })
+
+      test('should scope localized join reorder keys with request locale context', async ({
+        payload,
+        restClient,
+      }) => {
+        const enParent = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'localized parent en',
+          },
+          overrideAccess: true,
+        })
+
+        const nbParent = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'localized parent nb',
+          },
+          overrideAccess: true,
+        })
+
+        const otherNbParent = await payload.create({
+          collection: orderableJoinSlug,
+          data: {
+            title: 'localized parent other nb',
+          },
+          overrideAccess: true,
+        })
+
+        const localizedTarget = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a0',
+            orderableField: enParent.id,
+            title: 'localized scoped target',
+          },
+          locale: 'en',
+          overrideAccess: true,
+        })
+
+        await payload.update({
+          id: localizedTarget.id,
+          collection: orderableSlug,
+          data: {
+            orderableField: nbParent.id,
+          },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+
+        const localizedNeighbor = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a2',
+            orderableField: enParent.id,
+            title: 'localized scoped neighbor',
+          },
+          locale: 'en',
+          overrideAccess: true,
+        })
+
+        await payload.update({
+          id: localizedNeighbor.id,
+          collection: orderableSlug,
+          data: {
+            orderableField: nbParent.id,
+          },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+
+        const localizedMovedDoc = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a3',
+            orderableField: enParent.id,
+            title: 'localized scoped moved',
+          },
+          locale: 'en',
+          overrideAccess: true,
+        })
+
+        await payload.update({
+          id: localizedMovedDoc.id,
+          collection: orderableSlug,
+          data: {
+            orderableField: nbParent.id,
+          },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+
+        // This doc only pollutes the EN scope with `a1`.
+        const localizedEnPollution = await payload.create({
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a1',
+            orderableField: enParent.id,
+            title: 'localized en pollution',
+          },
+          locale: 'en',
+          overrideAccess: true,
+        })
+
+        await payload.update({
+          id: localizedEnPollution.id,
+          collection: orderableSlug,
+          data: {
+            orderableField: otherNbParent.id,
+          },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+
+        // Simulate "without req locale context": endpoint defaults to EN scope.
+        const reorderWithoutLocale = await restClient.POST('/reorder', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [localizedMovedDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_orderable_orderableJoinField1_order',
+            target: {
+              id: localizedTarget.id,
+              key: localizedTarget._orderable_orderableJoinField1_order,
+            },
+          }),
+        })
+
+        expect(reorderWithoutLocale.status).toStrictEqual(200)
+        const reorderWithoutLocaleBody = await reorderWithoutLocale.json()
+
+        // If scoped to EN (wrong for this scenario), we should NOT get the expected NB key.
+        expect(reorderWithoutLocaleBody.orderValues?.[0]).not.toBe('a1')
+
+        await payload.update({
+          id: localizedMovedDoc.id,
+          collection: orderableSlug,
+          data: {
+            _orderable_orderableJoinField1_order: 'a3',
+          },
+          overrideAccess: true,
+        })
+
+        await payload.update({
+          id: localizedMovedDoc.id,
+          collection: orderableSlug,
+          data: {
+            orderableField: nbParent.id,
+          },
+          locale: 'nb',
+          overrideAccess: true,
+        })
+
+        // With locale in request context, scope is NB and result should be deterministic.
+        const reorderWithLocale = await restClient.POST('/reorder?locale=nb', {
+          body: JSON.stringify({
+            collectionSlug: orderableSlug,
+            docsToMove: [localizedMovedDoc.id],
+            newKeyWillBe: 'greater',
+            orderableFieldName: '_orderable_orderableJoinField1_order',
+            target: {
+              id: localizedTarget.id,
+              key: localizedTarget._orderable_orderableJoinField1_order,
+            },
+          }),
+        })
+
+        expect(reorderWithLocale.status).toStrictEqual(200)
+        const reorderWithLocaleBody = await reorderWithLocale.json()
+
+        expect(reorderWithLocaleBody.orderValues?.[0]).toBe('a1')
+
+        const localizedMovedDocAfter = await payload.findByID({
+          id: localizedMovedDoc.id,
+          collection: orderableSlug,
+          overrideAccess: true,
+        })
+
+        expect(localizedMovedDocAfter._orderable_orderableJoinField1_order).toBe('a1')
+      })
+    })
+  })
+
+  test.describe('REST API', () => {
+    test.beforeAll(async ({ payloadInstance: payload }) => {
+      await createData(payload, 'posts', [
+        { number: 1, number2: 10, text: 'Post 1' },
+        { number: 2, number2: 10, text: 'Post 2' },
+        { number: 3, number2: 5, text: 'Post 3' },
+        { number: 10, number2: 5, text: 'Post 10' },
+        { number: 11, number2: 20, text: 'Post 11' },
+        { number: 12, number2: 20, text: 'Post 12' },
+      ])
+    })
+
+    test.afterAll(async ({ payloadInstance }) => {
+      await payloadInstance.delete({ collection: 'posts', overrideAccess: true, where: {} })
+    })
+
+    test.describe('Single sort field', () => {
+      test('should sort posts by text field', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: 'text',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 1',
+          'Post 10',
+          'Post 11',
+          'Post 12',
+          'Post 2',
+          'Post 3',
+        ])
+      })
+
+      test('should sort posts by text field desc', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: '-text',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 3',
+          'Post 2',
+          'Post 12',
+          'Post 11',
+          'Post 10',
+          'Post 1',
+        ])
+      })
+
+      test('should sort posts by number field', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: 'number',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 1',
+          'Post 2',
+          'Post 3',
+          'Post 10',
+          'Post 11',
+          'Post 12',
+        ])
+      })
+
+      test('should sort posts by number field desc', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: '-number',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 12',
+          'Post 11',
+          'Post 10',
+          'Post 3',
+          'Post 2',
+          'Post 1',
+        ])
+      })
+    })
+
+    test.describe('Sort by multiple fields', () => {
+      test('should sort posts by multiple fields', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: 'number2,number',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 3', // 5, 3
+          'Post 10', // 5, 10
+          'Post 1', // 10, 1
+          'Post 2', // 10, 2
+          'Post 11', // 20, 11
+          'Post 12', // 20, 12
+        ])
+      })
+
+      test('should sort posts by multiple fields asc and desc', async ({ restClient }) => {
+        const res = await restClient
+          .GET(`/posts`, {
+            query: {
+              sort: 'number2,-number',
+            },
+          })
+          .then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 10', // 5, 10
+          'Post 3', // 5, 3
+          'Post 2', // 10, 2
+          'Post 1', // 10, 1
+          'Post 12', // 20, 12
+          'Post 11', // 20, 11
+        ])
+      })
+    })
+
+    test.describe('Sort by multiple fields as array', () => {
+      test('should sort posts by multiple fields using qs-esm array params', async ({
+        restClient,
+      }) => {
+        const query = qs.stringify({ sort: ['number2', '-number'] })
+
+        const res = await restClient.GET(`/posts?${query}`).then((res) => res.json())
+
+        expect(res.docs.map((post) => post.text)).toEqual([
+          'Post 10', // 5, 10
+          'Post 3', // 5, 3
+          'Post 2', // 10, 2
+          'Post 1', // 10, 1
+          'Post 12', // 20, 12
+          'Post 11', // 20, 11
+        ])
+      })
+    })
+  })
+})
+
+async function createData(
+  payload: Payload,
+  collection: CollectionSlug,
+  data: Record<string, any>[],
+) {
+  for (const item of data) {
+    await payload.create({ collection, data: item, overrideAccess: true })
+  }
+}

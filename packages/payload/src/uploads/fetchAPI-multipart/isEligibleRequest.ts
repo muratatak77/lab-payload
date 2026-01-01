@@ -1,0 +1,26 @@
+const ACCEPTABLE_CONTENT_TYPE =
+  /multipart\/[\w'"()+,./:<=>?@[\\\]^-]+(?:; ?[\w'"()+,./:<=>?@[\\\]^-]*)+$/i
+const UNACCEPTABLE_METHODS = new Set(['CONNECT', 'DELETE', 'GET', 'HEAD', 'OPTIONS', 'TRACE'])
+
+const hasBody = (req: Request): boolean => {
+  const contentLength = req.headers.get('content-length')
+
+  return Boolean(
+    req.body || req.headers.get('transfer-encoding') || (contentLength && contentLength !== '0'),
+  )
+}
+
+const hasAcceptableMethod = (req: Request): boolean => !UNACCEPTABLE_METHODS.has(req.method)
+
+const hasAcceptableContentType = (req: Request): boolean => {
+  const contType = req.headers.get('content-type')
+  return contType!.includes('boundary=') && ACCEPTABLE_CONTENT_TYPE.test(contType!)
+}
+
+export const isEligibleRequest = (req: Request): boolean => {
+  try {
+    return hasBody(req) && hasAcceptableMethod(req) && hasAcceptableContentType(req)
+  } catch (ignore) {
+    return false
+  }
+}

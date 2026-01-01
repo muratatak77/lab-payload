@@ -1,0 +1,124 @@
+import type { Page } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+import path from 'path'
+import { wait } from 'payload/shared'
+import { fileURLToPath } from 'url'
+
+import { login } from '../__helpers/e2e/auth/login.js'
+import { goToListDoc } from '../__helpers/e2e/goToListDoc.js'
+import { saveDocAndAssert } from '../__helpers/e2e/helpers.js'
+import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
+import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
+import { initPage } from '../__setup/e2e/initPage.js'
+import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { BASE_PATH } from './shared.js'
+
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+
+process.env.NEXT_BASE_PATH = BASE_PATH
+
+test.describe('Base Path', () => {
+  let page: Page
+  let url: AdminUrlUtil
+  let serverURL: string
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(TEST_TIMEOUT_LONG)
+
+    const { payload } = await initPayloadE2ENoConfig({
+      dirname,
+    })
+    serverURL = payload.serverURL
+    url = new AdminUrlUtil(serverURL, 'posts')
+
+    const context = await browser.newContext()
+    ;({ page } = await initPage({ context, noAutoLogin: true, serverURL }))
+  })
+
+  test('should submit forgot-password form with correct basePath in action', async () => {
+    await page.goto(`${url.admin}/forgot`)
+
+    // Verify the form action includes the basePath prefix
+    await expect(async () => {
+      const formAction = await page.locator('form').getAttribute('action')
+      expect(formAction).toContain('/cms/api/users/forgot-password')
+    }).toPass()
+
+    // Fill in the email field and submit
+    await page.locator('#field-email').fill('dev@payloadcms.com')
+    await page.locator('button[type="submit"]').click()
+
+    // Verify success state renders — proves the POST went to the correct URL
+    await expect(page.locator('.form-header h1')).toHaveText('Email Sent')
+
+    const resendButton = page.getByRole('button', { name: /Resend \(\d+:\d{2}\)/ })
+    await expect(resendButton).toBeDisabled()
+    await expect(page.getByRole('link', { name: 'Back to login' })).toBeVisible()
+
+    const storedRequest = await page.evaluate(() =>
+      JSON.parse(window.sessionStorage.getItem('payload-forgot-password:users') || 'null'),
+    )
+    expect(storedRequest).toEqual({
+      identifier: 'dev@payloadcms.com',
+      resendAvailableAt: expect.any(Number),
+    })
+
+    await page.reload()
+
+    await expect(page.locator('.form-header h1')).toHaveText('Email Sent')
+    const restoredResendButton = page.locator('button.forgot-password__form__submit')
+    await expect(restoredResendButton).toHaveText(/Resend \(\d+:\d{2}\)/)
+    const restoredCountdown = await restoredResendButton.textContent()
+    await expect(restoredResendButton).toBeDisabled()
+    await expect.poll(() => restoredResendButton.textContent()).not.toBe(restoredCountdown)
+    await expect(restoredResendButton).toBeEnabled({ timeout: 20000 })
+    await expect(restoredResendButton).toHaveText('Resend')
+
+    await page.getByRole('link', { name: 'Back to login' }).click()
+    await expect(page).toHaveURL(/\/cms\/admin\/login$/)
+  })
+
+  test('should navigate to posts collection by clicking nav link', async () => {
+    // Navigate to the admin dashboard
+    await login({ page, serverURL })
+    await page.goto(url.admin)
+
+    // click first dashboard card
+    await page.locator('.collections__card-list .card').first().click()
+
+    // should navigate to basePath url
+    await expect.poll(() => page.url()).toContain('/cms/admin/collections/posts')
+
+    await goToListDoc({
+      cellClass: '.cell-title',
+      page,
+      textToMatch: 'First Post',
+      urlUtil: url,
+    })
+
+    const docID = (await page.locator('.render-title').getAttribute('data-doc-id')) as string
+    // should navigate to edit view with basePath url
+    await expect.poll(() => page.url()).toContain(`/cms/admin/collections/posts/${docID}`)
+
+    await page.locator('#field-title').fill('First Post Edited')
+    await saveDocAndAssert(page)
+  })
+
+  test('should navigate to create new post by clicking button', async () => {
+    // Navigate to posts list
+    await page.goto(url.list)
+
+    // Click the "Create New" button
+    const createButton = page.locator('a[href*="/posts/create"]').first()
+    await expect(createButton).toBeVisible()
+    await createButton.click()
+
+    // Verify we navigated to the create view
+    await expect.poll(() => page.url()).toContain('/posts/create')
+
+    // Verify the form is rendered
+    await expect(page.locator('#field-title')).toBeVisible()
+  })
+})

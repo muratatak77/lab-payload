@@ -1,0 +1,442 @@
+import { fileURLToPath } from 'node:url'
+import path from 'path'
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+import type { CollectionConfig } from 'payload'
+
+import { buildConfigWithDefaults } from '../buildConfigWithDefaults.js'
+import { seed } from './seed.js'
+import { errorOnHookSlug, pointSlug, relationSlug, slug } from './shared.js'
+
+export interface Relation {
+  id: string
+  name: string
+}
+
+const openAccess = {
+  create: () => true,
+  delete: () => true,
+  read: () => true,
+  update: () => true,
+}
+
+const collectionWithName = (
+  collectionSlug: string,
+  extra: Partial<CollectionConfig> = {},
+): CollectionConfig => {
+  return {
+    slug: collectionSlug,
+    access: openAccess,
+    fields: [
+      {
+        name: 'name',
+        type: 'text',
+      },
+    ],
+    versions: false,
+    ...extra,
+  }
+}
+
+export default buildConfigWithDefaults({
+  suite: 'collections-graphql',
+  config: {
+    admin: {
+      importMap: {
+        baseDir: path.resolve(dirname),
+      },
+    },
+    collections: [
+      {
+        slug: 'users',
+        access: openAccess,
+        auth: true,
+        fields: [],
+        versions: false,
+      },
+      {
+        slug: pointSlug,
+        access: openAccess,
+        fields: [
+          {
+            name: 'point',
+            type: 'point',
+          },
+        ],
+        versions: false,
+      },
+      {
+        slug,
+        access: openAccess,
+        fields: [
+          {
+            name: 'title',
+            type: 'text',
+          },
+          {
+            name: 'description',
+            type: 'text',
+          },
+          {
+            name: 'number',
+            type: 'number',
+          },
+          {
+            name: 'min',
+            type: 'number',
+            min: 10,
+          },
+          // Relationship
+          {
+            name: 'relationField',
+            type: 'relationship',
+            relationTo: relationSlug,
+          },
+          {
+            name: 'relationToCustomID',
+            type: 'relationship',
+            relationTo: 'custom-ids',
+          },
+          // Relation hasMany
+          {
+            name: 'relationHasManyField',
+            type: 'relationship',
+            hasMany: true,
+            relationTo: relationSlug,
+          },
+          // Relation multiple relationTo
+          {
+            name: 'relationMultiRelationTo',
+            type: 'relationship',
+            relationTo: [relationSlug, 'dummy'],
+          },
+          // Relation multiple relationTo hasMany
+          {
+            name: 'relationMultiRelationToHasMany',
+            type: 'relationship',
+            hasMany: true,
+            relationTo: [relationSlug, 'dummy'],
+          },
+          {
+            name: 'A1',
+            type: 'group',
+            fields: [
+              {
+                name: 'A2',
+                type: 'text',
+                defaultValue: 'textInRowInGroup',
+              },
+            ],
+          },
+          {
+            name: 'B1',
+            type: 'group',
+            fields: [
+              {
+                type: 'collapsible',
+                fields: [
+                  {
+                    name: 'B2',
+                    type: 'text',
+                    defaultValue: 'textInRowInGroup',
+                  },
+                ],
+                label: 'Collapsible',
+              },
+            ],
+          },
+          {
+            name: 'C1',
+            type: 'group',
+            fields: [
+              {
+                name: 'C2Text',
+                type: 'text',
+              },
+              {
+                type: 'row',
+                fields: [
+                  {
+                    type: 'collapsible',
+                    fields: [
+                      {
+                        name: 'C2',
+                        type: 'group',
+                        fields: [
+                          {
+                            type: 'row',
+                            fields: [
+                              {
+                                type: 'collapsible',
+                                fields: [
+                                  {
+                                    name: 'C3',
+                                    type: 'text',
+                                  },
+                                ],
+                                label: 'Collapsible2',
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                    label: 'Collapsible2',
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            type: 'tabs',
+            tabs: [
+              {
+                name: 'D1',
+                fields: [
+                  {
+                    name: 'D2',
+                    type: 'group',
+                    fields: [
+                      {
+                        type: 'row',
+                        fields: [
+                          {
+                            type: 'collapsible',
+                            fields: [
+                              {
+                                type: 'tabs',
+                                tabs: [
+                                  {
+                                    fields: [
+                                      {
+                                        name: 'D3',
+                                        type: 'group',
+                                        fields: [
+                                          {
+                                            type: 'row',
+                                            fields: [
+                                              {
+                                                type: 'collapsible',
+                                                fields: [
+                                                  {
+                                                    name: 'D4',
+                                                    type: 'text',
+                                                  },
+                                                ],
+                                                label: 'Collapsible2',
+                                              },
+                                            ],
+                                          },
+                                        ],
+                                      },
+                                    ],
+                                    label: 'Tab1',
+                                  },
+                                ],
+                              },
+                            ],
+                            label: 'Collapsible2',
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+                label: 'Tab1',
+              },
+            ],
+          },
+        ],
+        versions: { drafts: true },
+      },
+      {
+        slug: 'custom-ids',
+        access: {
+          read: () => true,
+        },
+        fields: [
+          {
+            name: 'id',
+            type: 'number',
+          },
+          {
+            name: 'title',
+            type: 'text',
+          },
+        ],
+        versions: false,
+      },
+      collectionWithName(relationSlug, {
+        access: {
+          ...openAccess,
+          read: () => {
+            return { name: { not_equals: 'restricted' } }
+          },
+        },
+        versions: { drafts: true },
+      }),
+      collectionWithName('dummy'),
+      {
+        ...collectionWithName(errorOnHookSlug),
+        fields: [
+          {
+            name: 'title',
+            type: 'text',
+          },
+          {
+            name: 'errorBeforeChange',
+            type: 'checkbox',
+          },
+        ],
+        hooks: {
+          afterDelete: [
+            ({ doc }) => {
+              if (doc?.errorAfterDelete) {
+                throw new Error('Error After Delete Thrown')
+              }
+            },
+          ],
+          beforeChange: [
+            ({ originalDoc }) => {
+              if (originalDoc?.errorBeforeChange) {
+                throw new Error('Error Before Change Thrown')
+              }
+            },
+          ],
+        },
+        versions: false,
+      },
+      {
+        slug: 'payload-api-test-ones',
+        access: {
+          read: () => true,
+        },
+        fields: [
+          {
+            name: 'payloadAPI',
+            type: 'text',
+            hooks: {
+              afterRead: [({ req }) => req.payloadAPI],
+            },
+          },
+        ],
+        versions: false,
+      },
+      {
+        slug: 'payload-api-test-twos',
+        access: {
+          read: () => true,
+        },
+        fields: [
+          {
+            name: 'payloadAPI',
+            type: 'text',
+            hooks: {
+              afterRead: [({ req }) => req.payloadAPI],
+            },
+          },
+          {
+            name: 'relation',
+            type: 'relationship',
+            relationTo: 'payload-api-test-ones',
+          },
+        ],
+        versions: false,
+      },
+      {
+        slug: 'content-type',
+        access: {
+          read: () => true,
+        },
+        fields: [
+          {
+            name: 'contentType',
+            type: 'text',
+            hooks: {
+              afterRead: [({ req }) => req.headers?.get('content-type')],
+            },
+          },
+        ],
+        versions: false,
+      },
+      {
+        slug: 'cyclical-relationship',
+        access: openAccess,
+        fields: [
+          {
+            name: 'title',
+            type: 'text',
+            localized: true,
+          },
+          {
+            name: 'relationToSelf',
+            type: 'relationship',
+            relationTo: 'cyclical-relationship',
+          },
+          {
+            name: 'media',
+            type: 'upload',
+            relationTo: 'media',
+          },
+        ],
+        versions: {
+          drafts: true,
+        },
+      },
+      {
+        slug: 'media',
+        access: openAccess,
+        fields: [
+          {
+            name: 'title',
+            type: 'text',
+          },
+        ],
+        upload: true,
+        versions: false,
+      },
+      {
+        slug: 'sort',
+        fields: [
+          {
+            name: 'title',
+            type: 'text',
+          },
+          {
+            name: 'number',
+            type: 'number',
+          },
+        ],
+        versions: false,
+      },
+    ],
+    graphQL: {
+      queries: (GraphQL) => {
+        return {
+          QueryWithInternalError: {
+            type: new GraphQL.GraphQLObjectType({
+              name: 'QueryWithInternalError',
+              fields: {
+                text: {
+                  type: GraphQL.GraphQLString,
+                },
+              },
+            }),
+            resolve: () => {
+              // Throwing an internal error with potentially sensitive data
+              throw new Error('Lost connection to the Pentagon. Secret data: ******')
+            },
+          },
+        }
+      },
+    },
+    localization: {
+      defaultLocale: 'en',
+      locales: ['en', 'es'],
+    },
+    typescript: {
+      outputFile: path.resolve(dirname, 'payload-types.ts'),
+    },
+  },
+  seed,
+})

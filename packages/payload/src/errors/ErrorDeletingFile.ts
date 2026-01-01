@@ -1,0 +1,16 @@
+import type { TFunction } from '@payloadcms/translations'
+
+import { en } from '@payloadcms/translations/languages/en'
+
+import { httpStatus } from '../utilities/httpStatus.js'
+import { APIError } from './APIError.js'
+
+export class ErrorDeletingFile extends APIError {
+  constructor(t?: TFunction) {
+    super(
+      t ? t('error:deletingFile') : en.translations.error.deletingFile,
+      httpStatus.INTERNAL_SERVER_ERROR,
+    )
+    this.name = 'ErrorDeletingFile'
+  }
+}

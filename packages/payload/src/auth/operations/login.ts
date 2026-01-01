@@ -1,0 +1,425 @@
+import type {
+  AuthOperationsFromCollectionSlug,
+  Collection,
+  DataFromCollectionSlug,
+} from '../../collections/config/types.js'
+import type { AuthCollectionSlug, AuthenticatedUser, User } from '../../index.js'
+import type { PayloadRequest, Where } from '../../types/index.js'
+import type { AuthRuntimeFields } from '../types.js'
+
+import { buildAfterOperation } from '../../collections/operations/utilities/buildAfterOperation.js'
+import { buildBeforeOperation } from '../../collections/operations/utilities/buildBeforeOperation.js'
+import {
+  AuthenticationError,
+  LockedAuth,
+  UnverifiedEmail,
+  ValidationError,
+} from '../../errors/index.js'
+import { commitTransaction, Forbidden, initTransaction } from '../../index.js'
+import { appendNonTrashedFilter } from '../../utilities/appendNonTrashedFilter.js'
+import { assertNoValidationWrite } from '../../utilities/assertNoValidationWrite.js'
+import { killTransaction } from '../../utilities/killTransaction.js'
+import { sanitizeInternalFields } from '../../utilities/sanitizeInternalFields.js'
+import { applyUserReadAccess } from '../applyUserReadAccess.js'
+import { createAuthToken } from '../createAuthToken.js'
+import { getLoginOptions } from '../getLoginOptions.js'
+import { isUserLocked } from '../isUserLocked.js'
+import { revokeSession } from '../sessions.js'
+import { authenticateLocalStrategy } from '../strategies/local/authenticate.js'
+import { generatePasswordSaltHash } from '../strategies/local/generatePasswordSaltHash.js'
+import { incrementLoginAttempts } from '../strategies/local/incrementLoginAttempts.js'
+import { resetLoginAttempts } from '../strategies/local/resetLoginAttempts.js'
+
+export type LoginResult<TSlug extends AuthCollectionSlug> = {
+  exp?: number
+  /** With `auth.refreshTokens`, trades for a new token after this one expires. */
+  refreshToken?: string
+  token?: string
+  user?: AuthRuntimeFields & DataFromCollectionSlug<TSlug>
+}
+
+export type Arguments<TSlug extends AuthCollectionSlug> = {
+  collection: Collection
+  data: AuthOperationsFromCollectionSlug<TSlug>['login']
+  depth?: number
+  overrideAccess?: boolean
+  req: PayloadRequest
+  showHiddenFields?: boolean
+}
+
+type CheckLoginPermissionArgs<TSlug extends AuthCollectionSlug> = {
+  loggingInWithUsername?: boolean
+  req: PayloadRequest
+  user: DataFromCollectionSlug<TSlug>
+}
+
+/**
+ * Throws an error if the user is locked or does not exist.
+ * This does not check the login attempts, only the lock status. Whoever increments login attempts
+ * is responsible for locking the user properly, not whoever checks the login permission.
+ */
+export const checkLoginPermission = <TSlug extends AuthCollectionSlug>({
+  loggingInWithUsername,
+  req,
+  user,
+}: CheckLoginPermissionArgs<TSlug>) => {
+  if (!user) {
+    throw new AuthenticationError(req.t, Boolean(loggingInWithUsername))
+  }
+
+  if (isUserLocked(new Date(user.lockUntil))) {
+    throw new LockedAuth(req.t)
+  }
+}
+
+export const loginOperation = async <TSlug extends AuthCollectionSlug>(
+  incomingArgs: Arguments<TSlug>,
+): Promise<LoginResult<TSlug>> => {
+  let args = incomingArgs
+
+  assertNoValidationWrite(args.req)
+
+  if (args.collection.config.auth.disableLocalStrategy) {
+    throw new Forbidden(args.req.t)
+  }
+
+  // /////////////////////////////////////
+  // beforeOperation - Collection
+  // /////////////////////////////////////
+
+  args = await buildBeforeOperation({
+    args,
+    collection: args.collection.config,
+    operation: 'login',
+    overrideAccess: args.overrideAccess!,
+  })
+
+  const {
+    collection: { config: collectionConfig },
+    data,
+    depth,
+    overrideAccess = false,
+    req,
+    req: { payload },
+    showHiddenFields,
+  } = args
+
+  // /////////////////////////////////////
+  // Login
+  // /////////////////////////////////////
+
+  const { email: unsanitizedEmail, password } = data
+  const loginWithUsername = collectionConfig.auth.loginWithUsername
+
+  const sanitizedEmail =
+    typeof unsanitizedEmail === 'string' ? unsanitizedEmail.toLowerCase().trim() : null
+  const sanitizedUsername =
+    'username' in data && typeof data?.username === 'string'
+      ? data.username.toLowerCase().trim()
+      : null
+
+  const { canLoginWithEmail, canLoginWithUsername } = getLoginOptions(loginWithUsername)
+
+  // cannot login with email, did not provide username
+  if (!canLoginWithEmail && !sanitizedUsername) {
+    throw new ValidationError({
+      collection: collectionConfig.slug,
+      errors: [{ message: req.i18n.t('validation:required'), path: 'username' }],
+    })
+  }
+
+  // cannot login with username, did not provide email
+  if (!canLoginWithUsername && !sanitizedEmail) {
+    throw new ValidationError({
+      collection: collectionConfig.slug,
+      errors: [{ message: req.i18n.t('validation:required'), path: 'email' }],
+    })
+  }
+
+  // can login with either email or username, did not provide either
+  if (!sanitizedUsername && !sanitizedEmail) {
+    throw new ValidationError({
+      collection: collectionConfig.slug,
+      errors: [
+        { message: req.i18n.t('validation:required'), path: 'email' },
+        { message: req.i18n.t('validation:required'), path: 'username' },
+      ],
+    })
+  }
+
+  // did not provide password for login
+  if (typeof password !== 'string' || password.trim() === '') {
+    throw new ValidationError({
+      collection: collectionConfig.slug,
+      errors: [{ message: req.i18n.t('validation:required'), path: 'password' }],
+    })
+  }
+
+  let whereConstraint: Where = {}
+  const emailConstraint: Where = {
+    email: {
+      equals: sanitizedEmail,
+    },
+  }
+  const usernameConstraint: Where = {
+    username: {
+      equals: sanitizedUsername,
+    },
+  }
+
+  if (canLoginWithEmail && canLoginWithUsername && (sanitizedUsername || sanitizedEmail)) {
+    if (sanitizedUsername) {
+      whereConstraint = {
+        or: [
+          usernameConstraint,
+          {
+            email: {
+              equals: sanitizedUsername,
+            },
+          },
+        ],
+      }
+    } else {
+      whereConstraint = {
+        or: [
+          emailConstraint,
+          {
+            username: {
+              equals: sanitizedEmail,
+            },
+          },
+        ],
+      }
+    }
+  } else if (canLoginWithEmail && sanitizedEmail) {
+    whereConstraint = emailConstraint
+  } else if (canLoginWithUsername && sanitizedUsername) {
+    whereConstraint = usernameConstraint
+  }
+
+  // Exclude trashed users
+  whereConstraint = appendNonTrashedFilter({
+    enableTrash: collectionConfig.trash,
+    trash: false,
+    where: whereConstraint,
+  })
+
+  let user = (await payload.db.findOne<User>({
+    collection: collectionConfig.slug,
+    req,
+    where: whereConstraint,
+  })) as AuthenticatedUser
+
+  checkLoginPermission({
+    loggingInWithUsername: Boolean(canLoginWithUsername && sanitizedUsername),
+    req,
+    user,
+  })
+
+  user.collection = collectionConfig.slug
+  user._strategy = 'local-jwt'
+
+  const authenticatedHash = user.hash
+  const authenticatedSalt = user.salt
+  const authResult = await authenticateLocalStrategy({
+    doc: user,
+    password,
+    passwordHashIterations: payload.config.auth.passwordHashIterations,
+  })
+  user = sanitizeInternalFields(user)
+
+  const maxLoginAttemptsEnabled = args.collection.config.auth.maxLoginAttempts > 0
+
+  if (!authResult) {
+    if (maxLoginAttemptsEnabled) {
+      await incrementLoginAttempts({
+        collection: collectionConfig,
+        payload: req.payload,
+        user,
+      })
+
+      // Re-check login permissions and max attempts after incrementing attempts, in case parallel updates occurred
+      checkLoginPermission({
+        loggingInWithUsername: Boolean(canLoginWithUsername && sanitizedUsername),
+        req,
+        user,
+      })
+    }
+
+    throw new AuthenticationError(req.t)
+  }
+
+  if (collectionConfig.auth.verify && user._verified === false) {
+    throw new UnverifiedEmail({ t: req.t })
+  }
+
+  // Authentication successful - start transaction for remaining operations
+  const shouldCommit = await initTransaction(args.req)
+  let sid: string | undefined
+
+  try {
+    /*
+     * Correct password accepted - re‑check that the account didn't
+     * get locked by parallel bad attempts in the meantime.
+     */
+    if (maxLoginAttemptsEnabled) {
+      const { lockUntil, loginAttempts } = (await payload.db.findOne<User>({
+        collection: collectionConfig.slug,
+        req,
+        select: {
+          lockUntil: true,
+          loginAttempts: true,
+        },
+        where: { id: { equals: user.id } },
+      }))!
+
+      user.lockUntil = lockUntil
+      user.loginAttempts = loginAttempts
+
+      checkLoginPermission({
+        req,
+        user,
+      })
+    }
+
+    const { exp, refreshToken, token, ...session } = await createAuthToken({
+      collectionConfig,
+      email: sanitizedEmail!,
+      req,
+      shouldCreateRefreshToken: Boolean(collectionConfig.auth.refreshTokens),
+      user,
+    })
+    sid = session.sid
+
+    if (
+      authResult.shouldUpdatePasswordHash &&
+      typeof authenticatedHash === 'string' &&
+      typeof authenticatedSalt === 'string'
+    ) {
+      try {
+        const { hash, salt } = await generatePasswordSaltHash({
+          collection: collectionConfig,
+          isPasswordAuthenticated: true,
+          password,
+          req,
+        })
+
+        await payload.db.updateOne({
+          collection: collectionConfig.slug,
+          data: { hash, salt },
+          req,
+          select: { id: true },
+          where: {
+            id: { equals: user.id },
+            hash: { equals: authenticatedHash },
+            salt: { equals: authenticatedSalt },
+          },
+        })
+      } catch (err) {
+        // Rehashing is opportunistic and is retried on the next login, so a failure here
+        // must not reject an otherwise valid login or discard the session already created
+        payload.logger.error({ err, msg: 'Failed to update the stored password hash' })
+      }
+    }
+
+    if (maxLoginAttemptsEnabled) {
+      await resetLoginAttempts({
+        collection: collectionConfig,
+        doc: user,
+        payload: req.payload,
+        req,
+      })
+    }
+
+    // /////////////////////////////////////
+    // beforeLogin - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.beforeLogin?.length) {
+      for (const hook of collectionConfig.hooks.beforeLogin) {
+        user =
+          (await hook({
+            collection: args.collection?.config,
+            context: args.req.context,
+            req: args.req,
+            user,
+          })) || user
+      }
+    }
+
+    req.user = user
+
+    // /////////////////////////////////////
+    // afterLogin - Collection
+    // /////////////////////////////////////
+
+    if (collectionConfig.hooks?.afterLogin?.length) {
+      for (const hook of collectionConfig.hooks.afterLogin) {
+        user =
+          (await hook({
+            collection: args.collection?.config,
+            context: args.req.context,
+            req: args.req,
+            token,
+            user,
+          })) || user
+      }
+    }
+
+    // /////////////////////////////////////
+    // afterRead - Fields
+    // /////////////////////////////////////
+
+    const userWithReadAccess = await applyUserReadAccess({
+      collection: collectionConfig,
+      depth: depth!,
+      overrideAccess,
+      req,
+      showHiddenFields: showHiddenFields!,
+      user,
+    })
+
+    let result: LoginResult<TSlug> = {
+      exp,
+      refreshToken,
+      token,
+      user: userWithReadAccess,
+    }
+
+    // /////////////////////////////////////
+    // afterOperation - Collection
+    // /////////////////////////////////////
+
+    result = await buildAfterOperation({
+      args,
+      collection: args.collection?.config,
+      operation: 'login',
+      overrideAccess: args.overrideAccess!,
+      result,
+    })
+
+    if (shouldCommit) {
+      await commitTransaction(req)
+    }
+
+    // /////////////////////////////////////
+    // Return results
+    // /////////////////////////////////////
+
+    return result
+  } catch (error: unknown) {
+    // The password was right, but the login failed afterwards, e.g. in a `beforeLogin` hook, so
+    // remove the session it started
+    if (sid) {
+      await revokeSession({
+        collectionConfig,
+        payload,
+        req,
+        sid,
+        user,
+      })
+    }
+    await killTransaction(args.req)
+    throw error
+  }
+}

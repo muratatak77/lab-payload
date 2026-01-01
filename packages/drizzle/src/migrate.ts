@@ -1,0 +1,128 @@
+import type { MigrationResult, Payload } from 'payload'
+
+import {
+  commitTransaction,
+  createPayloadRequest,
+  initTransaction,
+  killTransaction,
+  readMigrationFiles,
+} from 'payload'
+import prompts from 'prompts'
+
+import type { DrizzleAdapter, Migration } from './types.js'
+
+import { getTransaction } from './utilities/getTransaction.js'
+import { migrationTableExists } from './utilities/migrationTableExists.js'
+import { parseError } from './utilities/parseError.js'
+
+export const migrate: DrizzleAdapter['migrate'] = async function migrate(
+  this: DrizzleAdapter,
+  args,
+) {
+  const { payload } = this
+  const { forceAcceptWarning = false, shouldPrompt = true } = args ?? {}
+  const migrationFiles = args?.migrations || (await readMigrationFiles({ payload }))
+
+  if (!migrationFiles.length) {
+    payload.logger.info({ msg: 'No migrations to run.' })
+    return { migrated: [], rolledBack: [] }
+  }
+
+  if ('createExtensions' in this && typeof this.createExtensions === 'function') {
+    await this.createExtensions()
+  }
+
+  let latestBatch = 0
+  let migrationsInDB = []
+
+  const hasMigrationTable = await migrationTableExists(this)
+
+  if (hasMigrationTable) {
+    ;({ docs: migrationsInDB } = await payload.find({
+      collection: 'payload-migrations',
+      limit: 0,
+      overrideAccess: true,
+      sort: '-name',
+    }))
+
+    if (migrationsInDB.find((m) => m.batch === -1)) {
+      if (!forceAcceptWarning) {
+        if (!shouldPrompt) {
+          return { cancelled: true, migrated: [], rolledBack: [] }
+        }
+
+        const { confirm: runMigrations } = await prompts({
+          name: 'confirm',
+          type: 'confirm',
+          initial: false,
+          message:
+            "It looks like you've run Payload in dev mode, meaning you've dynamically pushed changes to your database.\n\n" +
+            "If you'd like to run migrations, data loss will occur. Would you like to proceed?",
+        })
+
+        if (!runMigrations) {
+          return { cancelled: true, migrated: [], rolledBack: [] }
+        }
+      }
+      // ignore the dev migration so that the latest batch number increments correctly
+      migrationsInDB = migrationsInDB.filter((m) => m.batch !== -1)
+    }
+
+    if (Number(migrationsInDB?.[0]?.batch) > 0) {
+      latestBatch = Number(migrationsInDB[0]?.batch)
+    }
+  }
+
+  const newBatch = latestBatch + 1
+  const migrated: string[] = []
+
+  // Execute 'up' function for each migration sequentially
+  for (const migration of migrationFiles) {
+    const alreadyRan = migrationsInDB.find((existing) => existing.name === migration.name)
+
+    // If already ran, skip
+    if (alreadyRan) {
+      continue
+    }
+
+    await runMigrationFile(payload, migration, newBatch)
+    migrated.push(migration.name)
+  }
+
+  return {
+    ...(migrated.length ? { batch: newBatch } : {}),
+    migrated,
+    rolledBack: [],
+  } satisfies MigrationResult
+}
+
+async function runMigrationFile(payload: Payload, migration: Migration, batch: number) {
+  const start = Date.now()
+  const req = await createPayloadRequest({ payload })
+
+  payload.logger.info({ msg: `Migrating: ${migration.name}` })
+
+  try {
+    await initTransaction(req)
+    const db = await getTransaction(payload.db as DrizzleAdapter, req)
+    await migration.up({ db, payload, req })
+    payload.logger.info({ msg: `Migrated:  ${migration.name} (${Date.now() - start}ms)` })
+    await payload.create({
+      collection: 'payload-migrations',
+      data: {
+        name: migration.name,
+        batch,
+      },
+      overrideAccess: true,
+      req,
+    })
+    await commitTransaction(req)
+  } catch (err: unknown) {
+    await killTransaction(req)
+    payload.logger.error({
+      err,
+      msg: parseError(err, `Error running migration ${migration.name}`),
+    })
+    throw err
+  }
+}

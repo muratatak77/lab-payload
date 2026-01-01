@@ -1,0 +1,11 @@
+import type { ClientField } from '../../fields/config/types.js'
+
+export type Column = {
+  readonly accessor: string
+  readonly active: boolean
+  readonly CustomLabel?: React.ReactNode
+  readonly field: ClientField
+  readonly Heading: React.ReactNode
+  readonly isLinkedColumn?: boolean
+  readonly renderedCells: React.ReactNode[]
+}
