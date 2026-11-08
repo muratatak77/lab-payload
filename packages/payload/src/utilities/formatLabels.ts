@@ -48,3 +48,5 @@ const formatNames = (slug: string): { plural: string; singular: string } => {
 }
 
 export { formatLabels, formatNames, toWords }
+
+// Lab note.
