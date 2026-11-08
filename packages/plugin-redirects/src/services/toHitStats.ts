@@ -5,7 +5,7 @@ import type { RedirectHitStats } from '../types.js'
 import { hitsFieldName, lastHitAtFieldName } from '../constants.js'
 
 export const hitStatsSelect = {
-  [hitsFieldName]:    true,
+  [hitsFieldName]: true,
   [lastHitAtFieldName]: true,
 } as const
 
