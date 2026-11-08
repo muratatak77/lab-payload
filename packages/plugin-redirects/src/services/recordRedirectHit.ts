@@ -39,28 +39,31 @@ export const recordRedirectHit = async ({
 
   const lastHitAt = new Date().toISOString()
 
-  const incremented = await payload.db.updateOne({
-    collection: collectionSlug,
-    data: {
-      [hitsFieldName]: { $inc: 1 },
-      [lastHitAtFieldName]: lastHitAt,
-      updatedAt: null,
-    },
-    req,
-    select: hitStatsSelect,
-    where: {
-      and: [{ id: { equals: id } }, { [hitsFieldName]: { exists: true } }],
-    },
-  })
+  const incrementHit = () =>
+    payload.db.updateOne({
+      collection: collectionSlug,
+      data: {
+        [hitsFieldName]: { $inc: 1 },
+        [lastHitAtFieldName]: lastHitAt,
+        updatedAt: null,
+      },
+      req,
+      select: hitStatsSelect,
+      where: {
+        and: [{ id: { equals: id } }, { [hitsFieldName]: { exists: true } }],
+      },
+    })
+
+  const incremented = await incrementHit()
 
   if (incremented) {
     return toHitStats(incremented)
   }
 
   // Redirects created before hit tracking was enabled have no stored counter, and SQL adapters
-  // cannot increment NULL. Initialize the counter with the first hit instead.
+  // cannot increment NULL. Initialize the counter with the first hit instead. The write is
+  // guarded on the counter still being empty so a concurrent first hit is never overwritten.
   const initialized = await payload.db.updateOne({
-    id,
     collection: collectionSlug,
     data: {
       [hitsFieldName]: 1,
@@ -69,7 +72,17 @@ export const recordRedirectHit = async ({
     },
     req,
     select: hitStatsSelect,
+    where: {
+      and: [{ id: { equals: id } }, { [hitsFieldName]: { exists: false } }],
+    },
   })
 
-  return initialized ? toHitStats(initialized) : null
+  if (initialized) {
+    return toHitStats(initialized)
+  }
+
+  // Another request initialized the counter in the meantime, so it can be incremented now.
+  const retried = await incrementHit()
+
+  return retried ? toHitStats(retried) : null
 }

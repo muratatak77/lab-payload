@@ -233,6 +233,83 @@ test.suite('@payloadcms/plugin-redirects', { config: './config.ts' }, () => {
       expect(nextStats?.hits).toBe(2)
     })
 
+    test('should count concurrent first hits of redirects created before tracking was enabled', async ({
+      payload,
+    }) => {
+      const redirect = await createCustomRedirect({ from: '/legacy-busy', payload })
+
+      await payload.db.updateOne({
+        id: redirect.id,
+        collection: redirectsSlug,
+        data: { hits: null },
+      })
+
+      await Promise.all(
+        Array.from({ length: 10 }, () => recordRedirectHit({ id: redirect.id, payload })),
+      )
+
+      const stored = await payload.findByID({
+        id: redirect.id,
+        collection: redirectsSlug,
+        overrideAccess: true,
+      })
+
+      expect(stored.hits).toBe(10)
+    })
+
+    test('should resolve without recording a hit when tracking is disabled', async ({
+      payload,
+    }) => {
+      const redirect = await createCustomRedirect({ from: '/untracked', payload })
+      const pluginCustom = payload.collections[redirectsSlug].config.custom['plugin-redirects']
+
+      pluginCustom.trackHits = false
+
+      try {
+        const req = await createPayloadRequest({ payload })
+
+        const resolved = await resolveRedirect({ from: '/untracked', req })
+
+        expect(resolved?.id).toBe(redirect.id)
+        expect(resolved?.hits).toBe(0)
+      } finally {
+        pluginCustom.trackHits = true
+      }
+
+      const stored = await payload.findByID({
+        id: redirect.id,
+        collection: redirectsSlug,
+        overrideAccess: true,
+      })
+
+      expect(stored.hits).toBe(0)
+      expect(stored.lastHitAt).toBeFalsy()
+    })
+
+    test('should not expose recorded hit stats to users without field read access', async ({
+      payload,
+    }) => {
+      await createCustomRedirect({ from: '/hidden-stats', payload })
+
+      const hitsField = payload.collections[redirectsSlug].config.flattenedFields.find(
+        ({ name }) => name === 'hits',
+      )!
+      const originalAccess = hitsField.access
+
+      hitsField.access = { ...originalAccess, read: () => false }
+
+      try {
+        const req = await createPayloadRequest({ payload })
+
+        const resolved = await resolveRedirect({ from: '/hidden-stats', req })
+
+        expect(resolved?.hits).not.toBe(1)
+        expect(resolved?.lastHitAt).toBeTruthy()
+      } finally {
+        hitsField.access = originalAccess
+      }
+    })
+
     test('should return null when recording a hit for a missing redirect', async ({ payload }) => {
       const redirect = await createCustomRedirect({ from: '/deleted', payload })
 
