@@ -35,7 +35,7 @@ export const redirectsPlugin = definePlugin<RedirectsPluginConfig>({
     )
 
     const shouldTrackHits = pluginConfig?.trackHits === true
-
+    const overrideEndpoints = pluginConfig?.overrides?.endpoints
     const redirectSelectField: SelectField = {
       name: 'type',
       type: 'select',
@@ -111,12 +111,12 @@ export const redirectsPlugin = definePlugin<RedirectsPluginConfig>({
         label: false,
       },
       ...(pluginConfig?.redirectTypes ? [redirectSelectField] : []),
-      ...(shouldTrackHits ? getHitTrackingFields() : []),
+      ...(shouldTrackHits
+        ? getHitTrackingFields({ canResetHits: overrideEndpoints !== false })
+        : []),
     ]
 
     const collectionSlug = pluginConfig?.overrides?.slug || defaultRedirectsSlug
-
-    const overrideEndpoints = pluginConfig?.overrides?.endpoints
 
     const redirectsCollection: CollectionConfig = {
       ...(pluginConfig?.overrides || {}),

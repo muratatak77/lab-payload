@@ -6,6 +6,9 @@ import type { RedirectsCollectionCustom } from '../types.js'
 
 import { customConfigKey } from '../constants.js'
 
+/**
+ * Returns `true` if the plugin enabled hit tracking for the given redirects collection.
+ */
 export const isHitTrackingEnabled = ({
   collectionConfig,
 }: {

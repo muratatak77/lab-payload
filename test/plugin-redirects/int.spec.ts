@@ -310,6 +310,40 @@ test.suite('@payloadcms/plugin-redirects', { config: './config.ts' }, () => {
       }
     })
 
+    test('should reject recording or resetting hits when tracking is disabled', async ({
+      payload,
+    }) => {
+      const redirect = await createCustomRedirect({ from: '/guarded', payload })
+      const pluginCustom = payload.collections[redirectsSlug].config.custom['plugin-redirects']
+
+      pluginCustom.trackHits = false
+
+      try {
+        const req = await createPayloadRequest({ payload })
+
+        await expect(recordRedirectHit({ id: redirect.id, payload })).rejects.toThrow(
+          /Hit tracking is not enabled/,
+        )
+        await expect(
+          resetRedirectHits({ id: redirect.id, overrideAccess: true, req }),
+        ).rejects.toThrow(/Hit tracking is not enabled/)
+      } finally {
+        pluginCustom.trackHits = true
+      }
+    })
+
+    test('should offer resetting hits in the admin when the reset endpoint is registered', ({
+      payload,
+    }) => {
+      const hitsField = payload.collections[redirectsSlug].config.fields.find(
+        (field) => 'name' in field && field.name === 'hits',
+      )
+
+      expect(hitsField?.admin?.components?.Field).toMatchObject({
+        clientProps: { canResetHits: true },
+      })
+    })
+
     test('should return null when recording a hit for a missing redirect', async ({ payload }) => {
       const redirect = await createCustomRedirect({ from: '/deleted', payload })
 

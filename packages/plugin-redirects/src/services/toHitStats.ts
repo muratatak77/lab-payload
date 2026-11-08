@@ -9,6 +9,10 @@ export const hitStatsSelect = {
   [lastHitAtFieldName]: true,
 } as const
 
+/**
+ * Returns the hit stats of a redirect document, with `hits` defaulting to `0` and `lastHitAt`
+ * to `null` when they have not been stored yet.
+ */
 export const toHitStats = (doc: JsonObject): RedirectHitStats => ({
   id: doc.id,
   hits: typeof doc[hitsFieldName] === 'number' ? doc[hitsFieldName] : 0,

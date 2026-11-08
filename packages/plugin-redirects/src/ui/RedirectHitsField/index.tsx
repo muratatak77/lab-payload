@@ -33,8 +33,17 @@ type ResetHitsResponse = {
   message?: string
 }
 
-export const RedirectHitsField: React.FC<NumberFieldClientProps> = (props) => {
+type RedirectHitsFieldProps = {
+  /**
+   * `false` when the reset endpoint is not registered, for example with `overrides.endpoints: false`.
+   * @default true
+   */
+  canResetHits?: boolean
+} & NumberFieldClientProps
+
+export const RedirectHitsField: React.FC<RedirectHitsFieldProps> = (props) => {
   const {
+    canResetHits = true,
     field: { admin: { description } = {}, label },
     path: pathFromProps,
   } = props
@@ -56,7 +65,8 @@ export const RedirectHitsField: React.FC<NumberFieldClientProps> = (props) => {
 
   const hits = typeof value === 'number' ? value : 0
   const confirmModalSlug = `${baseClass}-confirm-reset-${editDepth}`
-  const canReset = Boolean(id && collectionSlug && docPermissions?.update) && hits > 0
+  const canReset =
+    canResetHits && Boolean(id && collectionSlug && docPermissions?.update) && hits > 0
 
   const resetHits = useCallback(async () => {
     try {

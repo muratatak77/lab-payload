@@ -27,7 +27,8 @@ type RecordRedirectHitArgs = {
  * Writes go straight to the database adapter: no hooks run, no version is created and
  * `updatedAt` is left untouched, so tracking traffic does not look like an edit.
  *
- * Returns `null` if the redirect does not exist.
+ * Returns the updated `hits` and `lastHitAt` of the redirect, or `null` if it does not exist.
+ * Throws if hit tracking is not enabled for the collection.
  */
 export const recordRedirectHit = async ({
   id,

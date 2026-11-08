@@ -9,7 +9,16 @@ import { hitsFieldName, lastHitAtFieldName } from '../constants.js'
  */
 const denyWrite: FieldAccess = () => false
 
-export const getHitTrackingFields = (): [NumberField, DateField] => [
+/**
+ * Returns the read-only `hits` and `lastHitAt` fields added when hit tracking is enabled.
+ * Pass `canResetHits: false` when the reset endpoint is not registered, so the Admin Panel does
+ * not offer a **Reset hits** button that would fail.
+ */
+export const getHitTrackingFields = ({
+  canResetHits,
+}: {
+  canResetHits: boolean
+}): [NumberField, DateField] => [
   {
     name: hitsFieldName,
     type: 'number',
@@ -19,7 +28,12 @@ export const getHitTrackingFields = (): [NumberField, DateField] => [
     },
     admin: {
       components: {
-        Field: '@payloadcms/plugin-redirects/client#RedirectHitsField',
+        Field: {
+          clientProps: {
+            canResetHits,
+          },
+          path: '@payloadcms/plugin-redirects/client#RedirectHitsField',
+        },
       },
       position: 'sidebar',
       readOnly: true,

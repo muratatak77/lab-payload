@@ -141,7 +141,7 @@ This adds two read-only fields to the `redirects` collection:
 | `hits`      | `number` | How many times the redirect has been hit.          |
 | `lastHitAt` | `date`   | When the redirect was last hit, or empty if never. |
 
-Both fields are shown in the sidebar of the Edit View, and `hits` is added to the default columns of the List View so you can sort redirects by traffic. They cannot be written through the REST, GraphQL or Local API without `overrideAccess`, so regular saves never overwrite a counter that is being updated concurrently.
+Both fields are shown in the sidebar of the Edit View, and `hits` is added to the default columns of the List View so you can sort redirects by traffic. They cannot be written through the REST or GraphQL API, or through the Local API with `overrideAccess: false`, so those saves never overwrite a counter that is being updated concurrently. The Local API defaults to `overrideAccess: true`, so server code that saves a document it read earlier, for example `payload.update({ data: { ...doc } })`, writes the stale `hits` and `lastHitAt` values back. Leave both fields out of `data` in that case.
 
 A hit is recorded every time the [`resolve` endpoint](#resolving-redirects) or `resolveRedirect` returns a redirect. If your front-end already has the redirect, for example because it caches all of them, record the hit yourself with `recordRedirectHit`:
 
@@ -177,6 +177,8 @@ await resetRedirectHits({ id: redirect.id, req })
 ```
 
 `resetRedirectHits` checks the access control of the user on `req`. Pass `overrideAccess: true` to skip these checks, for example from a scheduled job.
+
+If you set `overrides.endpoints: false`, the `DELETE /api/redirects/:id/hits` endpoint is not registered and the **Reset hits** button is not shown. `resetRedirectHits` still works from server-side code.
 
 ## Frontend Integration
 

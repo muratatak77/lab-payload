@@ -26,7 +26,9 @@ type ResetRedirectHitsArgs = {
 /**
  * Resets the hit counter and `lastHitAt` timestamp of a redirect.
  *
- * Throws `NotFound` if the redirect does not exist or cannot be read, and `Forbidden` if the user
+ * Returns the reset stats (`hits: 0`, `lastHitAt: null`) of the redirect.
+ *
+ * Throws if hit tracking is not enabled for the collection, `NotFound` if the redirect does not exist or cannot be read, and `Forbidden` if the user
  * is not allowed to update it.
  */
 export const resetRedirectHits = async ({
