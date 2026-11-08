@@ -1,9 +1,13 @@
 import type React from 'react'
 import type { Page, Post } from '@/payload-types'
 
+import configPromise from '@payload-config'
+import { recordRedirectHit } from '@payloadcms/plugin-redirects'
 import { getCachedDocument } from '@/utilities/getDocument'
 import { getCachedRedirects } from '@/utilities/getRedirects'
 import { notFound, redirect } from 'next/navigation'
+import { after } from 'next/server'
+import { getPayload } from 'payload'
 
 interface Props {
   disableNotFound?: boolean
@@ -17,6 +21,9 @@ export const PayloadRedirects: React.FC<Props> = async ({ disableNotFound, url }
   const redirectItem = redirects.find((redirect) => redirect.from === url)
 
   if (redirectItem) {
+    // Redirects are served from cache, so count the hit separately once the response is sent
+    after(() => trackRedirectHit(redirectItem.id))
+
     if (redirectItem.to?.url) {
       redirect(redirectItem.to.url)
     }
@@ -45,4 +52,14 @@ export const PayloadRedirects: React.FC<Props> = async ({ disableNotFound, url }
   if (disableNotFound) return null
 
   notFound()
+}
+
+const trackRedirectHit = async (id: string) => {
+  const payload = await getPayload({ config: configPromise })
+
+  try {
+    await recordRedirectHit({ id, payload })
+  } catch (err) {
+    payload.logger.error({ err, msg: `Failed to record a hit for redirect ${id}` })
+  }
 }

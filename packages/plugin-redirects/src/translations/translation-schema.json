@@ -27,6 +27,21 @@
         },
         "redirectType": {
           "type": "string"
+        },
+        "hits": {
+          "type": "string"
+        },
+        "hitsReset": {
+          "type": "string"
+        },
+        "lastHitAt": {
+          "type": "string"
+        },
+        "resetHits": {
+          "type": "string"
+        },
+        "resetHitsConfirmation": {
+          "type": "string"
         }
       },
       "required": [
@@ -35,7 +50,12 @@
         "internalLink",
         "customUrl",
         "documentToRedirect",
-        "redirectType"
+        "redirectType",
+        "hits",
+        "hitsReset",
+        "lastHitAt",
+        "resetHits",
+        "resetHitsConfirmation"
       ]
     }
   },

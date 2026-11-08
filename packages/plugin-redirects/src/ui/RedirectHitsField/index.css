@@ -1,0 +1,20 @@
+@layer payload-default {
+  .redirect-hits-field {
+    margin-block-end: var(--spacing-field);
+  }
+
+  .redirect-hits-field__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacer-2);
+  }
+
+  .redirect-hits-field__count {
+    font-size: var(--text-body-2xl-font-size);
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--text-body-2xl-font-weight);
+    line-height: var(--text-body-2xl-line-height);
+    letter-spacing: var(--text-body-2xl-letter-spacing);
+  }
+}

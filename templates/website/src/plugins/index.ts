@@ -45,6 +45,7 @@ export const plugins: Plugin[] = [
         afterChange: [revalidateRedirects],
       },
     },
+    trackHits: true,
   }),
   nestedDocsPlugin({
     collections: ['categories'],

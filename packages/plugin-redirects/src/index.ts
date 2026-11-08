@@ -3,12 +3,19 @@ import type { CollectionConfig, Field, SelectField } from 'payload'
 import { definePlugin } from 'payload'
 import { deepMergeSimple } from 'payload/shared'
 
-import type { RedirectsPluginConfig } from './types.js'
+import type { RedirectsCollectionCustom, RedirectsPluginConfig } from './types.js'
 
+import { customConfigKey, defaultRedirectsSlug, hitsFieldName } from './constants.js'
+import { getResetRedirectHitsEndpoint } from './endpoints/resetRedirectHits.js'
+import { getResolveRedirectEndpoint } from './endpoints/resolveRedirect.js'
+import { getHitTrackingFields } from './fields/hitTrackingFields.js'
 import { redirectOptions } from './redirectTypes.js'
 import { translations } from './translations/index.js'
 
 export { redirectOptions, redirectTypes } from './redirectTypes.js'
+export { recordRedirectHit } from './services/recordRedirectHit.js'
+export { resetRedirectHits } from './services/resetRedirectHits.js'
+export { resolveRedirect } from './services/resolveRedirect.js'
 export { translations as redirectsTranslations } from './translations/index.js'
 export const redirectsPlugin = definePlugin<RedirectsPluginConfig>({
   slug: '@payloadcms/plugin-redirects',
@@ -27,6 +34,8 @@ export const redirectsPlugin = definePlugin<RedirectsPluginConfig>({
       incomingConfig.i18n?.translations,
     )
 
+    const shouldTrackHits = pluginConfig?.trackHits === true
+    const overrideEndpoints = pluginConfig?.overrides?.endpoints
     const redirectSelectField: SelectField = {
       name: 'type',
       type: 'select',
@@ -102,19 +111,43 @@ export const redirectsPlugin = definePlugin<RedirectsPluginConfig>({
         label: false,
       },
       ...(pluginConfig?.redirectTypes ? [redirectSelectField] : []),
+      ...(shouldTrackHits
+        ? getHitTrackingFields({ canResetHits: overrideEndpoints !== false })
+        : []),
     ]
+
+    const collectionSlug = pluginConfig?.overrides?.slug || defaultRedirectsSlug
 
     const redirectsCollection: CollectionConfig = {
       ...(pluginConfig?.overrides || {}),
-      slug: pluginConfig?.overrides?.slug || 'redirects',
+      slug: collectionSlug,
       access: {
         read: () => true,
         ...(pluginConfig?.overrides?.access || {}),
       },
       admin: {
-        defaultColumns: ['from', 'to.type', 'createdAt'],
+        defaultColumns: [
+          'from',
+          'to.type',
+          ...(shouldTrackHits ? [hitsFieldName] : []),
+          'createdAt',
+        ],
         ...(pluginConfig?.overrides?.admin || {}),
       },
+      custom: {
+        ...(pluginConfig?.overrides?.custom || {}),
+        [customConfigKey]: {
+          trackHits: shouldTrackHits,
+        } satisfies RedirectsCollectionCustom,
+      },
+      endpoints:
+        overrideEndpoints === false
+          ? false
+          : [
+              ...(overrideEndpoints || []),
+              getResolveRedirectEndpoint({ collectionSlug }),
+              ...(shouldTrackHits ? [getResetRedirectHitsEndpoint({ collectionSlug })] : []),
+            ],
       fields:
         pluginConfig?.overrides?.fields && typeof pluginConfig?.overrides?.fields === 'function'
           ? pluginConfig?.overrides.fields({ defaultFields })
