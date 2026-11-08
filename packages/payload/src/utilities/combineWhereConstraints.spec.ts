@@ -76,7 +76,7 @@ describe('combineWhereConstraints', () => {
   })
 
   it('should return an empty object when no constraints are provided', async () => {
-    expect(combineWhereConstraints([], 'and')).toEqual({ and: [] })
+    expect(combineWhereConstraints([], 'and')).toEqual({})
     expect(combineWhereConstraints([], 'or')).toEqual({})
   })
 
