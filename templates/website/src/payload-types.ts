@@ -810,6 +810,8 @@ export interface Redirect {
         } | null);
     url?: string | null;
   };
+  hits?: number | null;
+  lastHitAt?: string | null;
   createdBy?: {
     relationTo: 'users';
     value: string | User;
@@ -1479,6 +1481,8 @@ export interface RedirectsSelect<T extends boolean = true> {
         reference?: T;
         url?: T;
       };
+  hits?: T;
+  lastHitAt?: T;
   createdBy?: T;
   updatedBy?: T;
   updatedAt?: T;

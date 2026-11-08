@@ -27,6 +27,8 @@ For example, if you have a page at `/about` and you want to change it to `/about
 - Adds a `redirects` collection to your config that:
   - includes a `from` and `to` fields
   - allows `to` to be a document reference
+- Adds a `GET /api/redirects/resolve` endpoint to look up a redirect by its `from` path
+- Optionally [tracks how often each redirect is hit](#hit-tracking)
 
 The `redirects` collection tracks [authorship](../configuration/collections#authorship) by default (`createdBy` / `updatedBy`); set `authorship: false` in `overrides` to disable it.
 
@@ -71,6 +73,7 @@ export default config
 | `overrides`                 | `object`   | A partial collection config that allows you to override anything on the `redirects` collection.         |
 | `redirectTypes`             | `string[]` | Provide an array of redirects if you want to provide options for the type of redirects to be supported. |
 | `redirectTypeFieldOverride` | `Field`    | A partial Field config that allows you to override the Redirect Type field if enabled above.            |
+| `trackHits`                 | `boolean`  | Record how many times each redirect is resolved, and when it was last hit. Defaults to `false`.         |
 
 Note that the fields in overrides take a function that receives the default fields and returns an array of fields. This allows you to add fields to the collection.
 
@@ -95,11 +98,91 @@ redirectsPlugin({
 })
 ```
 
+## Resolving Redirects
+
+The plugin adds a `resolve` endpoint to the `redirects` collection, so your front-end can look up a single redirect by the incoming path instead of fetching every redirect:
+
+```ts
+const res = await fetch(
+  `${serverURL}/api/redirects/resolve?from=${encodeURIComponent('/about')}&depth=1`,
+)
+
+if (res.ok) {
+  const redirect = await res.json()
+  // redirect.to.url, or redirect.to.reference when linking to a document
+}
+```
+
+The `from` parameter must match the `from` field of a redirect exactly. The endpoint respects the `read` access control of the collection and responds with a `404` when no redirect matches. Use the `depth` parameter to control how `to.reference` is populated.
+
+From server-side code, use `resolveRedirect` to do the same through the Local API:
+
+```ts
+import { resolveRedirect } from '@payloadcms/plugin-redirects'
+
+const redirect = await resolveRedirect({ depth: 1, from: '/about', req })
+```
+
+## Hit Tracking
+
+Set `trackHits: true` to find out which redirects are still in use before you remove them:
+
+```ts
+redirectsPlugin({
+  collections: ['pages'],
+  trackHits: true,
+})
+```
+
+This adds two read-only fields to the `redirects` collection:
+
+| Field       | Type     | Description                                        |
+| ----------- | -------- | -------------------------------------------------- |
+| `hits`      | `number` | How many times the redirect has been hit.          |
+| `lastHitAt` | `date`   | When the redirect was last hit, or empty if never. |
+
+Both fields are shown in the sidebar of the Edit View, and `hits` is added to the default columns of the List View so you can sort redirects by traffic. They cannot be written through the REST, GraphQL or Local API without `overrideAccess`, so regular saves never overwrite a counter that is being updated concurrently.
+
+A hit is recorded every time the [`resolve` endpoint](#resolving-redirects) or `resolveRedirect` returns a redirect. If your front-end already has the redirect, for example because it caches all of them, record the hit yourself with `recordRedirectHit`:
+
+```ts
+import { recordRedirectHit } from '@payloadcms/plugin-redirects'
+
+await recordRedirectHit({ id: redirect.id, payload })
+```
+
+Hits are incremented atomically in the database. Recording a hit does not run hooks, does not create a new version and does not change the `updatedAt` timestamp of the redirect.
+
+<Banner type="warning">
+  The `resolve` endpoint is public whenever the `redirects` collection can be
+  read by anyone, which is the default. Anyone can therefore increase the hit
+  count by requesting it. Treat the numbers as an indication of usage, not as
+  precise analytics.
+</Banner>
+
+### Resetting hits
+
+Users with `update` access to a redirect can reset its counter from the Edit View using the **Reset hits** button next to the hit count. The same is available through the REST API:
+
+```
+DELETE /api/redirects/:id/hits
+```
+
+Or from server-side code:
+
+```ts
+import { resetRedirectHits } from '@payloadcms/plugin-redirects'
+
+await resetRedirectHits({ id: redirect.id, req })
+```
+
+`resetRedirectHits` checks the access control of the user on `req`. Pass `overrideAccess: true` to skip these checks, for example from a scheduled job.
+
 ## Frontend Integration
 
 It's important to note that this plugin only manages the redirects within the Payload Admin Panel and database. It does not handle the redirect itself.
 
-You will need to implement the actual redirect logic in your front-end application by querying the `redirects` collection and handling the redirects based on your application's routing logic.
+You will need to implement the actual redirect logic in your front-end application by querying the `redirects` collection, or the [`resolve` endpoint](#resolving-redirects), and handling the redirects based on your application's routing logic.
 
 A good example of how to implement this can be found in the [Website Template](https://github.com/payloadcms/payload/tree/main/templates/website).
 

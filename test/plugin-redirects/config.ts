@@ -9,6 +9,7 @@ import { devUser } from '../credentials.js'
 import { Pages } from './collections/Pages.js'
 import { Users } from './collections/Users.js'
 import { seed } from './seed/index.js'
+import { protectedRedirectFrom } from './shared.js'
 
 export default buildConfigWithDefaults({
   suite: 'plugin-redirects',
@@ -53,6 +54,10 @@ export default buildConfigWithDefaults({
       redirectsPlugin({
         collections: ['pages'],
         overrides: {
+          access: {
+            update: ({ req }) =>
+              req.user ? { from: { not_equals: protectedRedirectFrom } } : false,
+          },
           fields: ({ defaultFields }) => {
             return [
               ...defaultFields,
@@ -67,6 +72,7 @@ export default buildConfigWithDefaults({
           label: 'Redirect Type (Overridden)',
         },
         redirectTypes: ['301', '302'],
+        trackHits: true,
       }),
     ],
     typescript: {

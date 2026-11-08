@@ -42,6 +42,7 @@ export default buildConfig({
 | `overrides`                 | `object`   | A partial collection config that allows you to override anything on the `redirects` collection.         |
 | `redirectTypes`             | `string[]` | Provide an array of redirects if you want to provide options for the type of redirects to be supported. |
 | `redirectTypeFieldOverride` | `Field`    | A partial Field config that allows you to override the Redirect Type field if enabled above.            |
+| `trackHits`                 | `boolean`  | Record how many times each redirect is resolved, and when it was last hit. Defaults to `false`.         |
 
 ### Advanced Example
 

@@ -12,6 +12,7 @@ import { AdminUrlUtil } from '../__helpers/shared/adminUrlUtil.js'
 import { initPayloadE2ENoConfig } from '../__helpers/shared/initPayloadE2ENoConfig.js'
 import { initPage } from '../__setup/e2e/initPage.js'
 import { TEST_TIMEOUT_LONG } from '../playwright.config.js'
+import { redirectsSlug } from './shared.js'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -34,6 +35,58 @@ test.describe('Redirects Plugin', () => {
 
     const context = await browser.newContext()
     ;({ page } = await initPage({ context, serverURL }))
+  })
+
+  test.describe('Hit tracking', () => {
+    test('should show hits and reset them from the edit view', async () => {
+      const redirect = await payload.create({
+        collection: redirectsSlug,
+        data: {
+          from: '/e2e-hits',
+          to: { type: 'custom', url: '/target' },
+          type: '301',
+        },
+        overrideAccess: true,
+      })
+
+      for (let i = 0; i < 3; i++) {
+        const response = await fetch(`${serverURL}/api/${redirectsSlug}/resolve?from=/e2e-hits`)
+
+        expect(response.ok).toBe(true)
+      }
+
+      await page.goto(redirectsUrl.edit(redirect.id))
+
+      const hitsField = page.locator('#field-hits')
+      const lastHitAtInput = page.locator('#field-lastHitAt input')
+
+      await expect(hitsField.locator('.redirect-hits-field__count')).toHaveText('3')
+      await expect(lastHitAtInput).not.toHaveValue('')
+
+      await hitsField.getByRole('button', { name: 'Reset hits' }).click()
+
+      const confirmationDialog = page.getByRole('alertdialog')
+
+      await expect(confirmationDialog).toBeVisible()
+      await confirmationDialog.locator('[data-dialog-action="confirm"]').click()
+
+      await expect(page.locator('.payload-toast-container')).toContainText(
+        'Hit counter has been reset.',
+      )
+      await expect(hitsField.locator('.redirect-hits-field__count')).toHaveText('0')
+      await expect(hitsField.getByRole('button', { name: 'Reset hits' })).toBeHidden()
+      await expect(lastHitAtInput).toHaveValue('')
+
+      const {
+        docs: [stored],
+      } = await payload.find({
+        collection: redirectsSlug,
+        overrideAccess: true,
+        where: { id: { equals: redirect.id } },
+      })
+
+      expect(stored?.hits).toBe(0)
+    })
   })
 
   test.describe('Redirects collection', () => {

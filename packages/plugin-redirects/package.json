@@ -44,6 +44,11 @@
       "import": "./src/exports/types.ts",
       "types": "./src/exports/types.ts",
       "default": "./src/exports/types.ts"
+    },
+    "./client": {
+      "import": "./src/exports/client.ts",
+      "types": "./src/exports/client.ts",
+      "default": "./src/exports/client.ts"
     }
   },
   "publishConfig": {
@@ -59,6 +64,11 @@
         "import": "./dist/exports/types.js",
         "types": "./dist/exports/types.d.ts",
         "default": "./dist/exports/types.js"
+      },
+      "./client": {
+        "import": "./dist/exports/client.js",
+        "types": "./dist/exports/client.d.ts",
+        "default": "./dist/exports/client.js"
       }
     }
   },
@@ -72,11 +82,17 @@
   },
   "dependencies": {
     "@payloadcms/translations": "workspace:*",
+    "@payloadcms/ui": "workspace:*",
     "payload": "workspace:*"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
+  },
   "peerDependencies": {
-    "payload": "workspace:*"
+    "payload": "workspace:*",
+    "react": "^19.0.1 || ^19.1.2 || ^19.2.1",
+    "react-dom": "^19.0.1 || ^19.1.2 || ^19.2.1"
   },
   "homepage:": "https://payloadcms.com"
 }
